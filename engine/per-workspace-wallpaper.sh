@@ -38,19 +38,21 @@ LAST_BAR=""
 
 wallpaper_for() {
   case "$1" in
-    1|Google|2|Webscape|3|Personal|4|Gandalf|5|Tinkerbell) printf '#353839' ;;
+    1|Google|2|Webscape|3|Personal|4|Tinkerbell|5|Gandalf) printf '#353839' ;;
     *) printf '%s' "$DEFAULT_LINK" ;;
   esac
 }
 
 # "barbg barfg" per workspace — Option A (RT84): full palette bars, dark text.
+# T84 retune: Webscape +20% toward #1E90FF, Personal +20% toward #FFFF00,
+# Gandalf +25% toward orange #E07020; ws4/ws5 swapped (Tinkerbell now 4).
 bar_colors_for() {
   case "$1" in
     1|Google)     printf '#D7ECC5 #141413' ;;   # green   = Google
-    2|Webscape)   printf '#E3F7F9 #141413' ;;   # blue    = Webscape
-    3|Personal)   printf '#FFFDEE #141413' ;;   # yellow  = Personal
-    4|Gandalf)    printf '#E8D3A2 #141413' ;;   # gold    = Gandalf
-    5|Tinkerbell) printf '#F0D9F4 #141413' ;;   # pink    = Tinkerbell
+    2|Webscape)   printf '#BCE2FA #141413' ;;   # blue    = Webscape
+    3|Personal)   printf '#FFFDBE #141413' ;;   # yellow  = Personal
+    4|Tinkerbell) printf '#F0D9F4 #141413' ;;   # pink    = Tinkerbell
+    5|Gandalf)    printf '#E6BA82 #141413' ;;   # orange  = Gandalf
     *)            printf '@background @foreground' ;;   # theme passthrough
   esac
 }
