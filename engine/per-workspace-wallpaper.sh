@@ -31,10 +31,22 @@ set -u
 DEFAULT_LINK="$HOME/.config/omarchy/current/background"   # symlink; follows the theme
 WAYBAR_COLORS="$HOME/.config/waybar/workspace-colors.css"
 
-# Seed with what swaybg is already showing (image or colour), so we don't
-# pointlessly restart it at launch when the focused workspace already matches.
-LAST_BG="$(pgrep -af '[s]waybg' | grep -oP ' (-i \K[^ ]+|-c \K#?[0-9A-Fa-f]{6})' | head -1)"
-LAST_BAR=""
+LAST_BAR=""   # waybar de-dupe (in-memory is fine — this watcher is its only writer)
+
+# What swaybg is showing RIGHT NOW, normalized to wallpaper_for()'s tokens:
+# "#RRGGBB" for a solid colour, or an image path; empty if swaybg isn't running.
+# Wallpaper swaps de-dupe against THIS live value (not a cached one) so the
+# watcher also corrects a wallpaper that Omarchy reset behind our back — its own
+# theme/background init at login, or an `omarchy update` — which is what made
+# the named workspaces revert to the theme image (the Totoro cartoon).
+current_swaybg() {
+  local line
+  line="$(pgrep -af '[s]waybg' | head -1)" || return 0
+  case "$line" in
+    *" -c "*) printf '#%s' "$(printf '%s' "$line" | grep -oP ' -c \K#?[0-9A-Fa-f]{6}' | head -1 | tr -d '#')" ;;
+    *" -i "*) printf '%s'  "$(printf '%s' "$line" | grep -oP ' -i \K[^ ]+' | head -1)" ;;
+  esac
+}
 
 wallpaper_for() {
   case "$1" in
@@ -72,8 +84,7 @@ apply_wall() {
     \#*) ;;                                  # solid colour token
     *)   [ -e "$bg" ] || bg="$DEFAULT_LINK" ;;
   esac
-  [ "$bg" = "$LAST_BG" ] && return
-  LAST_BG="$bg"
+  [ "$bg" = "$(current_swaybg)" ] && return   # already showing the right thing
   pkill -x swaybg 2>/dev/null
   case "$bg" in
     \#*) run_swaybg -c "${bg#\#}" -m solid_color ;;
@@ -94,8 +105,13 @@ apply() { apply_wall "$1"; apply_bar "$1"; }
 
 active_ws() { hyprctl activeworkspace -j 2>/dev/null | grep -oP '"name"\s*:\s*"\K[^"]+' | head -1; }
 
-# Both surfaces for whatever workspace is focused at launch.
+# Both surfaces for whatever workspace is focused at launch. Re-assert a few
+# times in the background: Omarchy's own theme/background init can run AFTER us
+# at login and set the theme image — these override it without waiting for a
+# workspace switch (no flicker — apply de-dupes against the live swaybg). The
+# event loop below starts immediately, unblocked.
 apply "$(active_ws)"
+( for _ in 1 2 3 4; do sleep 2; apply "$(active_ws)"; done ) &
 
 # Stream Hyprland events; re-derive on monitor-focus changes; reconnect if the
 # compositor restarts its event socket. activespecial>> fires with an empty
