@@ -31,6 +31,18 @@ set -u
 DEFAULT_LINK="$HOME/.config/omarchy/current/background"   # symlink; follows the theme
 WAYBAR_COLORS="$HOME/.config/waybar/workspace-colors.css"
 
+# Headless-safe: when launched outside a graphical Hyprland session, derive the
+# runtime env the socket path below needs — otherwise the bare
+# ${XDG_RUNTIME_DIR}/${HYPRLAND_INSTANCE_SIGNATURE} expansion crashes under set -u.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  for sock in "$XDG_RUNTIME_DIR"/wayland-*; do
+    [ -S "$sock" ] && export WAYLAND_DISPLAY="$(basename "$sock")" && break
+  done
+fi
+[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || \
+  export HYPRLAND_INSTANCE_SIGNATURE="$(ls -t "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | head -1)"
+
 LAST_BAR=""   # waybar de-dupe (in-memory is fine — this watcher is its only writer)
 
 # What swaybg is showing RIGHT NOW, normalized to wallpaper_for()'s tokens:
