@@ -62,21 +62,23 @@ current_swaybg() {
 
 wallpaper_for() {
   case "$1" in
-    1|Google|2|Webscape|3|Personal|4|Tinkerbell|5|Gandalf) printf '#353839' ;;
+    1|Google|2|Webscape|3|Personal|4|Tinkerbell|5|Gandalf|6|Hazel) printf '#353839' ;;
     *) printf '%s' "$DEFAULT_LINK" ;;
   esac
 }
 
 # "barbg barfg" per workspace — Option A (RT84): full palette bars, dark text.
-# T84 retune: Webscape +20% toward #1E90FF, Personal +20% toward #FFFF00,
-# Gandalf +25% toward orange #E07020; ws4/ws5 swapped (Tinkerbell now 4).
+# T84 retune: Webscape +20% toward #1E90FF, Personal +20% toward #FFFF00.
+# 2026-06-20 (David): ws6 Hazel added — Gandalf moved orange→purple and Hazel
+# took the old Gandalf orange.
 bar_colors_for() {
   case "$1" in
     1|Google)     printf '#D7ECC5 #141413' ;;   # green   = Google
     2|Webscape)   printf '#BCE2FA #141413' ;;   # blue    = Webscape
     3|Personal)   printf '#FFFDBE #141413' ;;   # yellow  = Personal
     4|Tinkerbell) printf '#F0D9F4 #141413' ;;   # pink    = Tinkerbell
-    5|Gandalf)    printf '#E6BA82 #141413' ;;   # orange  = Gandalf
+    5|Gandalf)    printf '#C3B1E1 #141413' ;;   # purple  = Gandalf
+    6|Hazel)      printf '#E6BA82 #141413' ;;   # orange  = Hazel (was Gandalf's)
     *)            printf '@background @foreground' ;;   # theme passthrough
   esac
 }
