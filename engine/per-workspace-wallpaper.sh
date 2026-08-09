@@ -76,7 +76,23 @@ apply() {
   # with fewer backgrounds than workspaces wraps), and re-setting the same path is a visible flicker
   # for no change.
   [ "$want" = "$LAST" ] && return 0
-  omarchy-shell background "$METHOD" "$want" >/dev/null 2>&1 && LAST="$want"
+
+  # ⚠️ THE SYMLINK IS THE STATE. THE IPC CALL ALONE IS THROWN AWAY WITHIN 100ms — and that is the
+  # bug Dave hit: "it briefly shows its own wallpaper but then immediately reverts to the usual
+  # default one." Quickshell's background plugin runs
+  #     Timer { interval: 100; running: true; repeat: true; onTriggered: refreshBackground() }
+  # which re-reads ~/.local/state/omarchy/current/background ten times a second and reasserts
+  # whatever it points at. `background set` is a PREVIEW — it paints, and the very next tick
+  # overwrites it. Repointing the link first is what makes the choice stick, because then every one
+  # of those refreshes agrees with us.
+  #
+  # This is exactly what upstream's own `omarchy-theme-bg-set` does (ln -nsf, then the IPC call);
+  # inlined rather than shelled out so the transition METHOD stays ours to choose.
+  ln -nsf "$want" "$STATE/background" 2>/dev/null || return 0
+  # The IPC call is now only about latency: the symlink alone would be picked up, but up to 100ms
+  # later, which reads as a lag on every workspace switch.
+  omarchy-shell -q background "$METHOD" "$want" >/dev/null 2>&1
+  LAST="$want"
 }
 
 # Paint the workspace we start on, so the wallpaper is right before the first switch rather than
