@@ -74,7 +74,6 @@ wallpaper_for() {
   printf '%s' "${list[$(( (ws - 1) % ${#list[@]} ))]}"
 }
 
-LAST=""
 apply() {
   local ws="$1" want
   # ⚠️ THE v2 EVENT IS `ID,NAME` AND ONLY THE ID IS WANTED. Passed through whole, the id lands in an
@@ -87,7 +86,13 @@ apply() {
   # ⚠️ DE-DUPE OR IT REPAINTS ON EVERY SWITCH. Two workspaces can resolve to the same image (a theme
   # with fewer backgrounds than workspaces wraps), and re-setting the same path is a visible flicker
   # for no change.
-  [ "$want" = "$LAST" ] && return 0
+  #
+  # ⚠️ COMPARE AGAINST THE SYMLINK, NOT A REMEMBERED LAST VALUE. A remembered value says what THIS
+  # script last set; the link says what is actually on screen, and the two part company the moment
+  # anything else writes it — `omarchy theme set`, `omarchy theme bg next`. With one image for every
+  # workspace (the `all.<ext>` rule above) a remembered value would match forever, so the wallpaper
+  # would stay on whatever the theme change left behind and never come back.
+  [ "$want" = "$(readlink -f "$STATE/background" 2>/dev/null)" ] && return 0
 
   # ⚠️ THE SYMLINK IS THE STATE. THE IPC CALL ALONE IS THROWN AWAY WITHIN 100ms — and that is the
   # bug Dave hit: "it briefly shows its own wallpaper but then immediately reverts to the usual
@@ -104,7 +109,6 @@ apply() {
   # The IPC call is now only about latency: the symlink alone would be picked up, but up to 100ms
   # later, which reads as a lag on every workspace switch.
   omarchy-shell -q background "$METHOD" "$want" >/dev/null 2>&1
-  LAST="$want"
 }
 
 # Paint the workspace we start on, so the wallpaper is right before the first switch rather than
