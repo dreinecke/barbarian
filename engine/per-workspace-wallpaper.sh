@@ -17,6 +17,11 @@
 #
 # To pin a specific image to a workspace, drop a file next to this script named `ws<N>.<ext>`
 # (e.g. `ws4.png`) — an override always wins over the theme's list.
+#
+# To give EVERY workspace the same image, drop `all.<ext>` next to this script. It beats both the
+# per-workspace overrides and the theme. `all.png` is currently a plain black image, on David's
+# instruction of 2026-08-10 ("make all backgrounds just a plain black image for the time being") —
+# deleting that one file is the whole revert.
 
 set -u
 
@@ -48,10 +53,17 @@ theme_backgrounds() {
   find "$dir" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | sort
 }
 
-# Which image workspace N should show. An explicit ws<N>.<ext> override beats the theme; otherwise
-# index into the theme's list, wrapping if the theme ships fewer images than there are workspaces.
+# Which image workspace N should show. `all.<ext>` beats everything; failing that an explicit
+# ws<N>.<ext> override beats the theme; otherwise index into the theme's list, wrapping if the theme
+# ships fewer images than there are workspaces.
 wallpaper_for() {
   local ws="$1" override
+  # ⚠️ ONE FILE TURNS THE WHOLE THING OFF, and that is the point. "Every workspace the same" is a
+  # thing David asks for as a mood rather than a setting, so it has to be one file to add and one
+  # file to delete — not an edit here, which would be a change he cannot make or undo himself.
+  for override in "$HERE"/all.*; do
+    [ -f "$override" ] && { printf '%s' "$override"; return 0; }
+  done
   for override in "$HERE/ws$ws".*; do
     [ -f "$override" ] && { printf '%s' "$override"; return 0; }
   done
