@@ -16,12 +16,17 @@
 # theme change or an `omarchy update` silently reset the named workspaces back to the theme image.
 #
 # To pin a specific image to a workspace, drop a file next to this script named `ws<N>.<ext>`
-# (e.g. `ws4.png`) — an override always wins over the theme's list.
+# (e.g. `ws4.png`). That is the strongest of the three rules — nothing else can override it.
 #
-# To give EVERY workspace the same image, drop `all.<ext>` next to this script. It beats both the
-# per-workspace overrides and the theme. `all.png` is currently a plain black image, on David's
-# instruction of 2026-08-10 ("make all backgrounds just a plain black image for the time being") —
-# deleting that one file is the whole revert.
+# To fill every workspace that has NO image of its own, drop `all.<ext>` next to this script. It
+# stands in for the theme's list, not for the per-workspace files. `all.png` is currently a plain
+# black image, on David's instruction of 2026-08-10 ("make all backgrounds just a plain black image
+# for the time being") — deleting that one file is the whole revert.
+#
+# ⚠️ THE ORDER OF THOSE TWO WAS THE OTHER WAY ROUND UNTIL 2026-08-11, and it read as a broken
+# feature: Dave dropped `ws3.png` in and nothing happened, because `all.png` was still winning. A
+# blanket image is a mood he sets once; a per-workspace image is a deliberate choice about one
+# desk, so the deliberate one has to win or adding a picture looks like it did not work.
 
 set -u
 
@@ -53,18 +58,21 @@ theme_backgrounds() {
   find "$dir" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | sort
 }
 
-# Which image workspace N should show. `all.<ext>` beats everything; failing that an explicit
-# ws<N>.<ext> override beats the theme; otherwise index into the theme's list, wrapping if the theme
+# Which image workspace N should show. An explicit ws<N>.<ext> beats everything; failing that
+# `all.<ext>` covers whatever is left; otherwise index into the theme's list, wrapping if the theme
 # ships fewer images than there are workspaces.
 wallpaper_for() {
   local ws="$1" override
-  # ⚠️ ONE FILE TURNS THE WHOLE THING OFF, and that is the point. "Every workspace the same" is a
+  # A picture chosen for ONE desk is the most deliberate thing anyone can say here, so it wins.
+  # ⚠️ The suffix must be exactly `ws<N>.` — `ws2-blue.png` does NOT match `ws2.*` and stays inert,
+  # which is why two files from June are still sitting in that folder doing nothing.
+  for override in "$HERE/ws$ws".*; do
+    [ -f "$override" ] && { printf '%s' "$override"; return 0; }
+  done
+  # ⚠️ ONE FILE FILLS EVERY REMAINING WORKSPACE, and that is the point. "The rest all the same" is a
   # thing David asks for as a mood rather than a setting, so it has to be one file to add and one
   # file to delete — not an edit here, which would be a change he cannot make or undo himself.
   for override in "$HERE"/all.*; do
-    [ -f "$override" ] && { printf '%s' "$override"; return 0; }
-  done
-  for override in "$HERE/ws$ws".*; do
     [ -f "$override" ] && { printf '%s' "$override"; return 0; }
   done
 
