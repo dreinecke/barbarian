@@ -156,9 +156,21 @@ apply() {
   #
   # This is exactly what upstream's own `omarchy-theme-bg-set` does (ln -nsf, then the IPC call);
   # inlined rather than shelled out so the transition METHOD stays ours to choose.
+  #
+  # ⚠️ TELL THE SHELL BEFORE MOVING THE LINK, NOT AFTER — THE ORDER IS THE WHOLE ANIMATION FIX.
+  # Dave, 2026-08-11: "any way to remove the wallpaper change animation when moving from one ws to
+  # another?" There is, and it was never a setting. That same 100ms poll reads the link and calls
+  # `setBackground(path, false)` — the `false` is "not instant", so it runs a 420ms diagonal wipe.
+  # Moving the link first hands the poll a change it has not been told about, and it wipes. Worse,
+  # our own instant call then does nothing at all: `transitionBackground` returns early when the
+  # path it is given is already the current one, so the wipe the poll started just carries on.
+  # Telling the shell first means the poll finds nothing new, so there is nothing to animate. The
+  # 24ms it takes to reach the shell used to be the window the poll could win; now it is the window
+  # in which the link still reads old, which is a few microseconds.
+  omarchy-shell -q background "$METHOD" "$want" >/dev/null 2>&1
   ln -nsf "$want" "$STATE/background" 2>/dev/null || return 0
-  # The IPC call is now only about latency: the symlink alone would be picked up, but up to 100ms
-  # later, which reads as a lag on every workspace switch.
+  # Repair, for the rare poll that read the old link in those microseconds and started a wipe back
+  # to it. It is a no-op in the normal case, because by now the shell already holds this path.
   omarchy-shell -q background "$METHOD" "$want" >/dev/null 2>&1
 }
 
