@@ -64,8 +64,8 @@ theme_backgrounds() {
 wallpaper_for() {
   local ws="$1" override
   # A picture chosen for ONE desk is the most deliberate thing anyone can say here, so it wins.
-  # ⚠️ The suffix must be exactly `ws<N>.` — `ws2-blue.png` does NOT match `ws2.*` and stays inert,
-  # which is why two files from June are still sitting in that folder doing nothing.
+  # ⚠️ The name must be exactly `ws<N>.<ext>` — `ws2-blue.png` does NOT match `ws2.*`. Two files
+  # named that way sat in the folder doing nothing from June until Dave deleted them on 11 Aug.
   for override in "$HERE/ws$ws".*; do
     [ -f "$override" ] && { printf '%s' "$override"; return 0; }
   done
