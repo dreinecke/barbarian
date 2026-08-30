@@ -82,46 +82,12 @@ wallpaper_for() {
   printf '%s' "${list[$(( (ws - 1) % ${#list[@]} ))]}"
 }
 
-# ---- the active-window border, matched to the bar --------------------------------------------
-# Dave, 2026-08-11: "can one make that highlight match the bar color so each ws looks cohesive?"
-#
-# ⚠️ THE PALETTE IS READ OUT OF THE BAR PLUGIN, NOT COPIED HERE. Two lists of six colours would
-# disagree the first time one of them changed, and this project has already paid for a half-done
-# rename once. The plugin's `tints` map is plain enough to grep, and it stays the single place a
-# workspace's colour is decided.
-PLUGIN_QML="$HOME/.config/omarchy/plugins/tinkerbell.workspaces/Widget.qml"
-THEME_BORDER=""
-
-tint_for() { # <ws-id> → RRGGBB, or empty when that workspace has no colour of its own
-  [ -f "$PLUGIN_QML" ] || return 0
-  sed -n "s/^[[:space:]]*$1:[[:space:]]*\"#\([0-9A-Fa-f]\{6\}\)\".*/\1/p" "$PLUGIN_QML" | head -1
-}
-
-apply_border() { # <ws-id>
-  local hex
-  hex="$(tint_for "$1")"
-  # Remember the theme's own colour once, so an unnamed workspace can be handed it back rather than
-  # keeping whichever workspace was last visited.
-  if [ -z "$THEME_BORDER" ]; then
-    THEME_BORDER="$(hyprctl getoption general:col.active_border 2>/dev/null |
-      sed -n 's/.*gradient data:[[:space:]]*\([0-9a-fA-F]\{8\}\).*/\1/p' | head -1)"
-  fi
-  # ⚠️ `hyprctl keyword` IS DEAD ON QUATTRO — it answers "keyword can't work with non-legacy parsers.
-  # Use eval." and changes nothing, which reads exactly like a colour that refused to take. The Lua
-  # equivalent is `hyprctl eval hl.config({...})`, and the option's name is a KEY IN A TABLE
-  # (`["col.active_border"]`) because it has a dot in it.
-  #
-  # ⚠️ Hyprland REPORTS AARRGGBB and ACCEPTS RRGGBBAA. Handing back exactly what `getoption` printed
-  # would put the alpha in the red channel, so the theme's own value is rotated before it goes back.
-  local value=""
-  if [ -n "$hex" ]; then
-    value="rgba(${hex}ff)"
-  elif [ -n "$THEME_BORDER" ]; then
-    value="rgba(${THEME_BORDER:2}${THEME_BORDER:0:2})"
-  fi
-  [ -n "$value" ] || return 0
-  hyprctl eval "hl.config({ general = { [\"col.active_border\"] = \"$value\" } })" >/dev/null 2>&1
-}
+# ⚰️ THE ACTIVE-WINDOW BORDER HALF WAS REMOVED 2026-08-30, on Dave's word: the border is
+# theme-standard again, not per-workspace. It existed from 2026-08-11 ("can one make that
+# highlight match the bar color") and read the bar plugin's tints map — which the slimmed
+# widget no longer has. `git show d9933c7:omarchy/workspace-backgrounds/per-workspace-wallpaper.sh`
+# is the bordered era, including the AARGGBB-vs-RRGGBBAA rotation trap and the Quattro
+# `hyprctl eval` form, if a per-workspace border is ever wanted back.
 
 LAST=""
 apply() {
@@ -131,7 +97,6 @@ apply() {
   # `Webscape` as a variable name, and dies on `set -u`. Strip at the first comma.
   ws="${ws%%,*}"
   case "$ws" in ''|*[!0-9]*) return 0 ;; esac
-  apply_border "$ws"
   want="$(wallpaper_for "$ws")" || return 0
   [ -n "$want" ] || return 0
   # ⚠️ DE-DUPE OR IT REPAINTS ON EVERY SWITCH. Two workspaces can resolve to the same image (a theme
