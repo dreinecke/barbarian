@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "tinkerbell.arrange",
+  "name": "Arrange bar",
+  "version": "1.0.0",
+  "author": "Jace",
+  "license": "MIT",
+  "description": "Reorder the bar's right-hand widgets from a panel: drag rows or nudge them with keys; the new order is written to shell.json when the panel closes.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Arrange bar",
+    "description": "Drag-to-reorder panel for the bar's right side.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
