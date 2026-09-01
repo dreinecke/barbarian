@@ -69,7 +69,15 @@ Panel {
     "Raising the bar", "Bar none", "Behind bars", "The bar exam",
     "Salad bar", "Space bar", "Crowbar", "Handlebar moustache",
     "Chocolate bar", "Bar humbug", "Granola bar", "Foo-bar",
-    "Nothing bar the truth", "Two icons walk into a bar"
+    "Nothing bar the truth", "Two icons walk into a bar",
+    "Bar the shouting", "Barred for life", "Barring any objections",
+    "Barring a miracle", "A galaxy bar, bar away", "So bar, so good",
+    "As bar as the eye can see", "Bar from perfect",
+    "The simple Bar Necessities", "Bar-barian Rhapsody",
+    "Bar-anormal activity", "One Bar to Rule Them All",
+    "Friends, Romans, countrymen, lend me your bars",
+    "A rolling bar gathers no moss",
+    "I'm going to make him a bar he can't refuse", "Bar-adise"
   ]
   property int motto: Math.floor(Math.random() * 9973)
 
