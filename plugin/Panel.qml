@@ -60,6 +60,14 @@ Panel {
   // MacBook names come from the sync, so the pencil is not offered there).
   property int wsEditing: -1
   property bool canRename: false
+  // Where the workspaces strip sits on the bar — Barbarian's MODE (Dave, 2026-09-01):
+  // "1" strip far left, icons centre + right · "2" icons left, strip centre (stock) ·
+  // "3" icons in all three sections, the strip parked off the bar. Derived from
+  // shell.json on every open and applied, like everything else, on close.
+  property string mode: "2"
+  // The strip's widget id as found in the layout (tinkerbell.workspaces here,
+  // omarchy.workspaces stock) — the apply script moves it whole between sections.
+  property string wsWidgetId: ""
 
   // The hero's subtitle: one bar pun per opening, cycling through the lot. The pool
   // is Dave-curated (2026-09-01, a 58-strong long-list cut to these survivors).
@@ -170,10 +178,36 @@ Panel {
   }
 
   ListModel { id: lmL }
+  ListModel { id: lmC }
   ListModel { id: lmR }
-  ListModel { id: lmW }   // the desks, middle column
+  ListModel { id: lmW }   // the desks
 
-  function modelFor(lane) { return lane === "L" ? lmL : lmR }
+  function modelFor(lane) { return lane === "L" ? lmL : lane === "C" ? lmC : lmR }
+
+  // The icon lanes visible in the current mode, left to right on screen.
+  function laneOrder() {
+    return mode === "1" ? ["C", "R"] : mode === "2" ? ["L", "R"] : ["L", "C", "R"]
+  }
+
+  // Switching mode moves the strip; the icon lane that loses its column empties into
+  // its neighbour so no icon is stranded in an invisible lane.
+  function setMode(m) {
+    if (m === mode) return
+    if (m === "1") drainLane(lmL, lmC)
+    else if (m === "2") drainLane(lmC, lmL)
+    mode = m
+    var lanes = laneOrder()
+    if (lanes.indexOf(curLane) < 0) { curLane = lanes[0]; cursor = 0 }
+    dirty = true
+  }
+  function drainLane(from, into) {
+    var at = 0
+    while (from.count > 0) {
+      var r = from.get(0)
+      into.insert(at++, { wid: r.wid, label: r.label, glyph: r.glyph, hid: r.hid, lit: r.lit })
+      from.remove(0)
+    }
+  }
 
   // Desks come from Hyprland itself (works on both machines); recordings from the
   // HYPER+S snapshot directory. Reordering desks is deliberately NOT offered: a desk's
@@ -234,7 +268,7 @@ Panel {
     var rows = []
     for (var i = 0; i < layout.length; i++) {
       var wid = String(layout[i].id || "")
-      if (wid === "" || wid === selfId) continue
+      if (wid === "" || wid === selfId || wid === wsWidgetId) continue
       rows.push({ wid: wid, label: prettyName(wid), glyph: iconFor(wid), hid: false,
                   lit: visibleNow(wid) })
     }
@@ -242,7 +276,7 @@ Panel {
     parked.sort(function(a, b) { return (a.index || 0) - (b.index || 0) })
     for (var p = 0; p < parked.length; p++) {
       var pw = String((parked[p].entry || {}).id || "")
-      if (pw === "" || pw === selfId) continue
+      if (pw === "" || pw === selfId || pw === wsWidgetId) continue
       var at = Math.min(Math.max(0, parked[p].index || 0), rows.length)
       rows.splice(at, 0, { wid: pw, label: prettyName(pw), glyph: iconFor(pw), hid: true,
                            lit: false })
@@ -259,8 +293,27 @@ Panel {
       var rest = String(parts[1] || "").split("---WS---")
       var parked = {}
       try { parked = JSON.parse(rest[0] || "{}") } catch (e2) {}
-      fillLane(lmL, layout.left || [], parked.left || [])
-      fillLane(lmR, layout.right || [], parked.right || [])
+      var secL = layout.left || [], secC = layout.center || [], secR = layout.right || []
+      var pkL = parked.left || [], pkC = parked.center || [], pkR = parked.right || []
+      function findWs(list) {
+        for (var fi = 0; fi < list.length; fi++)
+          if (/\.workspaces$/.test(String(list[fi].id || ""))) return String(list[fi].id)
+        return ""
+      }
+      function ents(rows) {
+        var o = []
+        for (var ei = 0; ei < rows.length; ei++) o.push(rows[ei].entry || {})
+        return o
+      }
+      var inL = findWs(secL), inC = findWs(secC), inR = findWs(secR)
+      wsWidgetId = inL || inC || inR
+        || findWs(ents(pkL).concat(ents(pkC)).concat(ents(pkR)))
+      // A strip in the right section has no mode of its own — treated as centre, and
+      // the next apply moves it there.
+      mode = inL ? "1" : (inC || inR) ? "2" : "3"
+      fillLane(lmL, secL, pkL)
+      fillLane(lmC, secC, pkC)
+      fillLane(lmR, secR, pkR)
       var tail = String(rest[1] || "").split("---ACTIVE---")
       var tail2 = String(tail[1] || "").split("---SNAPS---")
       var tail3 = String(tail2[1] || "").split("---CANRENAME---")
@@ -270,7 +323,10 @@ Panel {
       loadError = "Could not read the bar layout file."
     }
     wsEditing = -1
-    curLane = lmR.count > 0 ? "R" : "L"
+    var lanes = laneOrder()
+    curLane = lanes[0]
+    for (var li = 0; li < lanes.length; li++)
+      if (modelFor(lanes[li]).count > 0) { curLane = lanes[li]; break }
     cursor = 0
   }
 
@@ -315,20 +371,38 @@ Panel {
   }
 
   function switchLane(dir) {
-    var to = dir < 0 ? "L" : "R"
-    if (to === curLane || modelFor(to).count === 0) return
-    curLane = to
-    cursor = Math.max(0, Math.min(modelFor(to).count - 1, cursor))
+    var lanes = laneOrder()
+    var i = lanes.indexOf(curLane)
+    if (i < 0) i = 0
+    var j = i + (dir < 0 ? -1 : 1)
+    while (j >= 0 && j < lanes.length && modelFor(lanes[j]).count === 0)
+      j += (dir < 0 ? -1 : 1)
+    if (j < 0 || j >= lanes.length) return
+    curLane = lanes[j]
+    cursor = Math.max(0, Math.min(modelFor(curLane).count - 1, cursor))
+  }
+
+  // H/L throw the selected row into the neighbouring icon lane.
+  function throwAcross(dir) {
+    var lanes = laneOrder()
+    var i = lanes.indexOf(curLane)
+    var j = i + dir
+    if (i < 0 || j < 0 || j >= lanes.length) return
+    moveAcross(curLane, cursor, lanes[j], cursor)
   }
 
   function apply() {
     if (applyProc.running) return
     var argv = [applyScript]
-    var i
-    for (i = 0; i < lmL.count; i++)
-      argv.push("L:" + lmL.get(i).wid + (lmL.get(i).hid ? ":hidden" : ""))
-    for (i = 0; i < lmR.count; i++)
-      argv.push("R:" + lmR.get(i).wid + (lmR.get(i).hid ? ":hidden" : ""))
+    var lanes = laneOrder(), i
+    for (var li = 0; li < lanes.length; li++) {
+      var m = modelFor(lanes[li])
+      for (i = 0; i < m.count; i++)
+        argv.push(lanes[li] + ":" + m.get(i).wid + (m.get(i).hid ? ":hidden" : ""))
+    }
+    if (wsWidgetId !== "")
+      argv.push("WS:" + wsWidgetId + ":"
+        + (mode === "1" ? "left" : mode === "2" ? "center" : "hidden"))
     applyProc.command = argv
     applyProc.running = true
   }
@@ -374,10 +448,10 @@ Panel {
   component LaneList: ListView {
     id: list
 
-    // "L" or "R" — which bar lane this column edits.
+    // "L", "C" or "R" — which bar section this column edits.
     property string lane: "R"
-    // The other column, for cross-drop coordinate math.
-    property ListView other: null
+    // The other icon columns, for cross-drop coordinate math.
+    property var others: []
 
     readonly property int slotHeight: Style.space(34)
     width: parent.width
@@ -388,7 +462,7 @@ Panel {
     clip: false                               // a card dragged across the gap must stay visible
     interactive: false
     spacing: 0
-    model: lane === "L" ? lmL : lmR
+    model: lane === "L" ? lmL : lane === "C" ? lmC : lmR
 
     move: Transition { NumberAnimation { properties: "y"; duration: 110 } }
     moveDisplaced: Transition { NumberAnimation { properties: "y"; duration: 110 } }
@@ -505,7 +579,7 @@ Panel {
             root.toggleHidden(list.lane, wrap.index)
         }
         onPositionChanged: {
-          if (!drag.active || !list.other) return
+          if (!drag.active) return
           var c = card.mapToItem(list, card.width / 2, card.height / 2)
           if (c.x >= 0 && c.x <= list.width) {
             // Still over the home column: live-reorder as before.
@@ -516,18 +590,152 @@ Panel {
           }
         }
         onReleased: {
-          // Dropped over the other column? The row changes lanes at the drop position.
-          if (list.other) {
-            var o = card.mapToItem(list.other, card.width / 2, card.height / 2)
-            if (o.x >= -Style.space(6) && o.x <= list.other.width + Style.space(6)) {
-              var at = Math.max(0, Math.min(list.other.count,
-                                            Math.round(o.y / list.slotHeight)))
-              root.moveAcross(list.lane, wrap.index, list.other.lane, at)
+          // Dropped over another visible icon column? The row changes lanes there.
+          for (var oi = 0; oi < list.others.length; oi++) {
+            var ol = list.others[oi]
+            if (!ol || !ol.visible) continue
+            var o = card.mapToItem(ol, card.width / 2, card.height / 2)
+            if (o.x >= -Style.space(6) && o.x <= ol.width + Style.space(6)) {
+              var at = Math.max(0, Math.min(ol.count, Math.round(o.y / list.slotHeight)))
+              root.moveAcross(list.lane, wrap.index, ol.lane, at)
+              break
             }
           }
           card.x = 0; card.y = Style.space(2)
         }
         onCanceled: { card.x = 0; card.y = Style.space(2) }
+      }
+    }
+  }
+
+  // The desks column body — go, rename (SER8 only, the sync owns the MacBook's names),
+  // save (HYPER+S) and restore (HYPER+R) per desk. Reusable in whichever slot the mode
+  // puts it. No dragging here: a desk's NUMBER is load-bearing in four places
+  // (see fillWorkspaces).
+  component DeskList: Column {
+    id: dlist
+    spacing: 0
+
+    Repeater {
+      model: lmW
+
+            delegate: Item {
+        id: wrow
+        required property var model
+        required property int index
+
+        width: dlist.width
+        height: Style.space(34)
+
+        Rectangle {
+          id: wcard
+          width: wrow.width
+          height: wrow.height - Style.space(4)
+          y: Style.space(2)
+          radius: Style.cornerRadius
+          color: wrow.model.focused
+            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+            : nameArea.containsMouse
+              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+
+          Text {
+            id: wnum
+            anchors.left: parent.left
+            anchors.leftMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: wrow.model.num
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            color: Qt.darker(root.foreground, 1.6)
+          }
+
+          Text {
+            id: wname
+            visible: root.wsEditing !== wrow.index
+            anchors.left: wnum.right
+            anchors.leftMargin: Style.space(8)
+            anchors.right: wpencil.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            text: wrow.model.name
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            color: root.foreground
+          }
+
+          TextField {
+            id: wedit
+            visible: root.wsEditing === wrow.index
+            anchors.left: wnum.right
+            anchors.leftMargin: Style.space(4)
+            anchors.right: wpencil.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            color: root.foreground
+            onVisibleChanged: if (visible) { text = wrow.model.name; forceActiveFocus(); selectAll() }
+            onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
+            Keys.onEscapePressed: root.wsEditing = -1
+          }
+
+          MouseArea {
+            id: nameArea
+            anchors.left: parent.left
+            anchors.right: wpencil.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            hoverEnabled: true
+            enabled: root.wsEditing !== wrow.index
+            onClicked: root.wsFocus(wrow.model.num)
+          }
+
+          PanelActionButton {
+            id: wpencil
+            visible: root.canRename
+            anchors.right: wsave.left
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.iconPencil
+            tooltipText: "Rename"
+            foreground: Qt.darker(root.foreground, 1.8)
+            hoverColor: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.wsEditing = root.wsEditing === wrow.index ? -1 : wrow.index
+          }
+
+          PanelActionButton {
+            id: wsave
+            anchors.right: wrestore.left
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.iconSave
+            tooltipText: "Save layout (HYPER+S)"
+            foreground: Qt.darker(root.foreground, 1.8)
+            hoverColor: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.wsSave(wrow.model.num)
+          }
+
+          PanelActionButton {
+            id: wrestore
+            anchors.right: parent.right
+            anchors.rightMargin: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.iconRestore
+            tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
+            foreground: Qt.darker(root.foreground, 1.8)
+            hoverColor: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            opacity: wrow.model.hasSnap ? 1 : 0.3
+            onClicked: if (wrow.model.hasSnap) root.wsRestore(wrow.model.num)
+          }
+        }
       }
     }
   }
@@ -561,8 +769,8 @@ Panel {
       onTextKey: function(t) {
         if (t === "J") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
         else if (t === "K") root.moveItem(root.curLane, root.cursor, root.cursor - 1)
-        else if (t === "H") root.moveAcross(root.curLane, root.cursor, "L", root.cursor)
-        else if (t === "L") root.moveAcross(root.curLane, root.cursor, "R", root.cursor)
+        else if (t === "H") root.throwAcross(-1)
+        else if (t === "L") root.throwAcross(1)
       }
 
       Column {
@@ -649,8 +857,58 @@ Panel {
           }
         }
 
-        // Hero to separator: space(8) on top of the column's space(6) makes the
+        // Hero to toggle: space(8) on top of the column's space(6) makes the
         // stock panels' space(14) gap.
+        Item { width: 1; height: Style.space(8) }
+
+        // Where the workspaces strip lives on the bar — the same chip toggle the seat
+        // panel's model picker wears. Staged like every other change: Enter or
+        // click-away applies, Escape forgets.
+        Row {
+          id: modeRow
+          width: parent.width
+          spacing: Style.space(10)
+
+          readonly property real chipWidth: (width - spacing * 2) / 3
+
+          Button {
+            width: modeRow.chipWidth
+            text: "Workspaces left"
+            bordered: true
+            selected: root.mode === "1"
+            foreground: root.foreground
+            background: bar ? bar.background : Color.background
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.setMode("1")
+          }
+          Button {
+            width: modeRow.chipWidth
+            text: "Workspaces centre"
+            bordered: true
+            selected: root.mode === "2"
+            foreground: root.foreground
+            background: bar ? bar.background : Color.background
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.setMode("2")
+          }
+          Button {
+            width: modeRow.chipWidth
+            text: "Workspaces off"
+            bordered: true
+            selected: root.mode === "3"
+            foreground: root.foreground
+            background: bar ? bar.background : Color.background
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.setMode("3")
+          }
+        }
+
         Item { width: 1; height: Style.space(8) }
 
         PanelSeparator { width: parent.width; foreground: root.accent; strength: 0.18 }
@@ -679,19 +937,17 @@ Panel {
 
           readonly property real colWidth: (width - spacing * 4 - 2) / 3
 
+          // Slot one: the strip in mode 1, otherwise the bar's left icons.
           Column {
-            id: colL
+            id: col0
             width: laneRow.colWidth
             spacing: 0
 
             Text {
               width: parent.width
-              text: "LEFT"
+              text: root.mode === "1" ? "WORKSPACES" : "LEFT"
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
-              // The content column already puts space(6) above this heading, so the
-              // top padding is smaller by that much — measured centred, not assumed
-              // (Dave caught the first cut sitting low, 2026-09-01).
               topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
@@ -712,30 +968,28 @@ Panel {
             LaneList {
               id: lviewL
               lane: "L"
-              other: lviewR
+              others: [lviewC, lviewR]
+              visible: root.mode !== "1"
             }
+
+            DeskList { width: parent.width; visible: root.mode === "1" }
           }
 
-          // The faint rule between the lanes (Dave, 2026-09-01).
           Rectangle {
             width: 1
-            height: Math.max(colL.height, Math.max(colW.height, colR.height))
+            height: Math.max(col0.height, Math.max(col1.height, col2.height))
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
           }
 
-          // The desks, in the middle — where they sit on the bar (Dave, 2026-09-01 🎊).
-          // Click a name to go there; the pencil renames (SER8 only — the sync owns the
-          // MacBook's names), the floppy records the desk's layout (HYPER+S), the arrow
-          // puts the recording back (HYPER+R). No dragging here: renumbering a desk is
-          // load-bearing in four places (see fillWorkspaces).
+          // Slot two: the strip in mode 2 (stock), otherwise the bar's centre icons.
           Column {
-            id: colW
+            id: col1
             width: laneRow.colWidth
             spacing: 0
 
             Text {
               width: parent.width
-              text: "WORKSPACES"
+              text: root.mode === "2" ? "WORKSPACES" : "MIDDLE"
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
               topPadding: 0
@@ -755,138 +1009,25 @@ Panel {
 
             Item { width: 1; height: Style.space(4) }
 
-            Repeater {
-              model: lmW
-
-              delegate: Item {
-                id: wrow
-                required property var model
-                required property int index
-
-                width: colW.width
-                height: Style.space(34)
-
-                Rectangle {
-                  id: wcard
-                  width: wrow.width
-                  height: wrow.height - Style.space(4)
-                  y: Style.space(2)
-                  radius: Style.cornerRadius
-                  color: wrow.model.focused
-                    ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
-                    : nameArea.containsMouse
-                      ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
-                      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-
-                  Text {
-                    id: wnum
-                    anchors.left: parent.left
-                    anchors.leftMargin: Style.space(8)
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: wrow.model.num
-                    textFormat: Text.PlainText
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    color: Qt.darker(root.foreground, 1.6)
-                  }
-
-                  Text {
-                    id: wname
-                    visible: root.wsEditing !== wrow.index
-                    anchors.left: wnum.right
-                    anchors.leftMargin: Style.space(8)
-                    anchors.right: wpencil.left
-                    anchors.rightMargin: Style.space(6)
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: wrow.model.name
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    color: root.foreground
-                  }
-
-                  TextField {
-                    id: wedit
-                    visible: root.wsEditing === wrow.index
-                    anchors.left: wnum.right
-                    anchors.leftMargin: Style.space(4)
-                    anchors.right: wpencil.left
-                    anchors.rightMargin: Style.space(6)
-                    anchors.verticalCenter: parent.verticalCenter
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    color: root.foreground
-                    onVisibleChanged: if (visible) { text = wrow.model.name; forceActiveFocus(); selectAll() }
-                    onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
-                    Keys.onEscapePressed: root.wsEditing = -1
-                  }
-
-                  MouseArea {
-                    id: nameArea
-                    anchors.left: parent.left
-                    anchors.right: wpencil.left
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    hoverEnabled: true
-                    enabled: root.wsEditing !== wrow.index
-                    onClicked: root.wsFocus(wrow.model.num)
-                  }
-
-                  PanelActionButton {
-                    id: wpencil
-                    visible: root.canRename
-                    anchors.right: wsave.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    iconText: root.iconPencil
-                    tooltipText: "Rename"
-                    foreground: Qt.darker(root.foreground, 1.8)
-                    hoverColor: root.accent
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    onClicked: root.wsEditing = root.wsEditing === wrow.index ? -1 : wrow.index
-                  }
-
-                  PanelActionButton {
-                    id: wsave
-                    anchors.right: wrestore.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    iconText: root.iconSave
-                    tooltipText: "Save layout (HYPER+S)"
-                    foreground: Qt.darker(root.foreground, 1.8)
-                    hoverColor: root.accent
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    onClicked: root.wsSave(wrow.model.num)
-                  }
-
-                  PanelActionButton {
-                    id: wrestore
-                    anchors.right: parent.right
-                    anchors.rightMargin: Style.space(2)
-                    anchors.verticalCenter: parent.verticalCenter
-                    iconText: root.iconRestore
-                    tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
-                    foreground: Qt.darker(root.foreground, 1.8)
-                    hoverColor: root.accent
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    opacity: wrow.model.hasSnap ? 1 : 0.3
-                    onClicked: if (wrow.model.hasSnap) root.wsRestore(wrow.model.num)
-                  }
-                }
-              }
+            LaneList {
+              id: lviewC
+              lane: "C"
+              others: [lviewL, lviewR]
+              visible: root.mode !== "2"
             }
+
+            DeskList { width: parent.width; visible: root.mode === "2" }
           }
 
           Rectangle {
             width: 1
-            height: Math.max(colL.height, Math.max(colW.height, colR.height))
+            height: Math.max(col0.height, Math.max(col1.height, col2.height))
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
           }
 
+          // Slot three: always the bar's right icons.
           Column {
-            id: colR
+            id: col2
             width: laneRow.colWidth
             spacing: 0
 
@@ -895,9 +1036,6 @@ Panel {
               text: "RIGHT"
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
-              // The content column already puts space(6) above this heading, so the
-              // top padding is smaller by that much — measured centred, not assumed
-              // (Dave caught the first cut sitting low, 2026-09-01).
               topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
@@ -918,7 +1056,7 @@ Panel {
             LaneList {
               id: lviewR
               lane: "R"
-              other: lviewL
+              others: [lviewL, lviewC]
             }
           }
         }

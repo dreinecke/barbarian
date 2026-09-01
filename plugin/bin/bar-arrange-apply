@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# bar-arrange-apply <L|R>:<widget-id>[:hidden]... — rewrite the LEFT and RIGHT sections of
-# ~/.config/omarchy/shell.json to the given order, and park ids marked :hidden in
-# ~/.config/omarchy/bar-hidden.json. Two lanes since 2026-09-01 (Dave asked for icons on
-# the far left); hiding since the same day (Dave: Bluetooth is "noise/clutter 99% of the
-# time but occasionally I want" — so a hidden entry is MOVED to the sidecar with its whole
-# settings object, its lane and its position, never deleted).
+# bar-arrange-apply <L|C|R>:<widget-id>[:hidden]... [WS:<id>:<left|center|hidden>]
+# Rewrite the LEFT, CENTER and RIGHT sections of ~/.config/omarchy/shell.json to the
+# given order, park ids marked :hidden in ~/.config/omarchy/bar-hidden.json, and place
+# the workspaces strip per the WS directive. Two lanes since 2026-09-01 (Dave asked for
+# icons on the far left); hiding since the same day (Dave: Bluetooth is "noise/clutter
+# 99% of the time but occasionally I want" — a hidden entry is MOVED to the sidecar with
+# its whole settings object, its lane and its position, never deleted); the CENTER lane
+# and the WS directive since the same evening (Barbarian's mode toggle: the strip goes
+# far left, centre, or off the bar entirely — parked in the sidecar like any hidden row).
 #
 # Entries travel as whole objects, so per-widget settings (the clock's formats, the
-# spacer's size) survive a reorder, a lane change and a hide/show round-trip. Ids in the
-# file but not in the arguments (the invisible tinkerbell.arrange widget itself) keep
-# their place at the end of the lane they were already in. Writes are tmp+rename, so a
-# crash mid-write cannot half-eat the bar.
+# strip's own config) survive a reorder, a lane change and a hide/show round-trip. Ids
+# in the file but not in the arguments (the invisible tinkerbell.arrange widget itself)
+# keep their place at the end of the lane they were already in. Without a WS directive
+# (a stale pre-mode panel) the strip simply stays where it is. Writes are tmp+rename,
+# so a crash mid-write cannot half-eat the bar.
 #
-# Refuses rather than guesses: an argument that names no current entry (either lane or
-# the sidecar), or names one twice, aborts with both files unchanged.
+# Refuses rather than guesses: an argument that names no current entry (any lane or the
+# sidecar), or names one twice, aborts with both files unchanged.
 set -euo pipefail
 python3 - "$@" <<'PY'
 import json, os, sys, tempfile
@@ -24,9 +28,15 @@ if not sys.argv[1:]:
     sys.exit("bar-arrange-apply: no ids given")
 
 want = []  # (lane, id, hidden)
+ws_id = ws_place = None
 for arg in sys.argv[1:]:
+    if arg.startswith("WS:"):
+        _, ws_id, ws_place = arg.split(":")
+        if ws_place not in ("left", "center", "hidden"):
+            sys.exit(f"bar-arrange-apply: bad WS placement '{ws_place}'")
+        continue
     parts = arg.split(":")
-    if parts[0] in ("L", "R"):
+    if parts[0] in ("L", "C", "R"):
         lane, wid = parts[0], parts[1]
         hid = len(parts) > 2 and parts[2] == "hidden"
     else:  # bare id — the pre-lane call form; those panels only knew the right section
@@ -37,25 +47,49 @@ for arg in sys.argv[1:]:
 with open(path) as f:
     data = json.load(f)
 layout = data["bar"]["layout"]
-sections = {"L": layout.get("left", []), "R": layout.get("right", [])}
+LANES = ("L", "C", "R")
+KEYS = {"L": "left", "C": "center", "R": "right"}
+sections = {ln: layout.get(KEYS[ln], []) for ln in LANES}
 
-parked_in = {"L": [], "R": []}
+parked_in = {ln: [] for ln in LANES}
 if os.path.exists(side):
     with open(side) as f:
         sd = json.load(f)
-    parked_in["L"] = sd.get("left", [])
-    parked_in["R"] = sd.get("right", [])
+    for ln in LANES:
+        parked_in[ln] = sd.get(KEYS[ln], [])
+
+# The workspaces strip moves whole, driven only by the WS directive — pull it out of
+# every lane and the sidecar before anything else looks at the rows.
+ws_entry = None
+if ws_id:
+    for ln in LANES:
+        keep = []
+        for e in sections[ln]:
+            if e.get("id") == ws_id and ws_entry is None:
+                ws_entry = e
+            else:
+                keep.append(e)
+        sections[ln] = keep
+        keep = []
+        for row in parked_in[ln]:
+            if (row.get("entry") or {}).get("id") == ws_id and ws_entry is None:
+                ws_entry = row["entry"]
+            else:
+                keep.append(row)
+        parked_in[ln] = keep
+    if ws_entry is None:
+        ws_entry = {"id": ws_id}
 
 pools = {}
-for sec in ("L", "R"):
-    for entry in sections[sec]:
+for ln in LANES:
+    for entry in sections[ln]:
         pools.setdefault(entry["id"], []).append(entry)
-    for row in parked_in[sec]:
+    for row in parked_in[ln]:
         pools.setdefault(row["entry"]["id"], []).append(row["entry"])
 
-ordered = {"L": [], "R": []}
-parked = {"L": [], "R": []}
-pos = {"L": 0, "R": 0}
+ordered = {ln: [] for ln in LANES}
+parked = {ln: [] for ln in LANES}
+pos = {ln: 0 for ln in LANES}
 for lane, wid, hid in want:
     pool = pools.get(wid)
     if not pool:
@@ -72,14 +106,19 @@ for lane, wid, hid in want:
 # half was missing until 2026-09-01, and a caller that did not know about the sidecar
 # (the pre-hide panel, still rendering out of a stale shell) silently destroyed the
 # hidden Bluetooth entry through it.
-named = [e for lane in ("L", "R") for e in ordered[lane]] \
-      + [r["entry"] for lane in ("L", "R") for r in parked[lane]]
-for sec, key in (("L", "left"), ("R", "right")):
-    leftovers = [e for e in sections[sec] if not any(e is o for o in named)]
-    layout[key] = ordered[sec] + leftovers
-    for row in parked_in[sec]:
+named = [e for ln in LANES for e in ordered[ln]] \
+      + [r["entry"] for ln in LANES for r in parked[ln]]
+for ln in LANES:
+    leftovers = [e for e in sections[ln] if not any(e is o for o in named)]
+    lane_rows = ordered[ln] + leftovers
+    if ws_id and ws_place == KEYS[ln]:
+        lane_rows = [ws_entry] + lane_rows
+    layout[KEYS[ln]] = lane_rows
+    for row in parked_in[ln]:
         if not any(row["entry"] is o for o in named):
-            parked[sec].append({"index": row.get("index", 0), "entry": row["entry"]})
+            parked[ln].append({"index": row.get("index", 0), "entry": row["entry"]})
+if ws_id and ws_place == "hidden":
+    parked["C"].insert(0, {"index": 0, "entry": ws_entry})
 
 def write(p, obj):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix="." + os.path.basename(p) + ".")
@@ -93,5 +132,5 @@ def write(p, obj):
         raise
 
 write(path, data)
-write(side, {"left": parked["L"], "right": parked["R"]})
+write(side, {KEYS[ln]: parked[ln] for ln in LANES})
 PY
