@@ -797,8 +797,11 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             iconText: root.iconImage
             tooltipText: "Background"
-            // Accent when this desk has a pinned image of its own.
-            foreground: wrow.model.bgPin !== "" ? root.accent : Qt.darker(root.foreground, 1.8)
+            // Uniform with the other desk buttons: with every desk pinned, the old
+            // accent-when-pinned tint was always on — a signal carrying nothing
+            // (Dave queried the odd colour, 2026-09-01). The picker's highlighted
+            // swatch shows the pin state instead.
+            foreground: Qt.darker(root.foreground, 1.8)
             hoverColor: root.accent
             fontFamily: root.fontFamily
             fontSize: Style.font.caption
