@@ -727,7 +727,10 @@ Panel {
         Rectangle {
           id: wcard
           width: wrow.width
-          height: wrow.height - Style.space(4)
+          // Fixed row height, NOT wrow.height - the delegate grows to hold the open
+          // background picker, and a card bound to it ballooned over the rows below
+          // (Dave's "jumbled" screenshot, 2026-09-01).
+          height: Style.space(30)
           y: Style.space(2)
           radius: Style.cornerRadius
           color: wrow.model.focused
