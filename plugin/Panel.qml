@@ -117,6 +117,25 @@ Panel {
     return icons[wid] || ""
   }
 
+  // Whether a widget is ACTUALLY drawing anything on the bar right now — independent of
+  // our show/hide setting. Time Machine hides itself while backups are healthy, the
+  // indicators shrink to nothing when no state is active, and Dave found the two axes
+  // confusing when they wore one style (2026-09-01): so the label's STRIKETHROUGH is our
+  // setting (crossed = parked off the bar), and its BRIGHTNESS is the live fact (faded =
+  // drawing nothing at this moment).
+  function visibleNow(wid) {
+    if (!bar || typeof bar.moduleWidgets !== "function") return true
+    var items = bar.moduleWidgets(wid)
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i]
+      if (it.visible === false) continue
+      var w = (it.implicitWidth !== undefined && it.implicitWidth !== null)
+        ? it.implicitWidth : (it.width || 0)
+      if (w > 1) return true
+    }
+    return false
+  }
+
   ListModel { id: lmL }
   ListModel { id: lmR }
 
@@ -128,7 +147,8 @@ Panel {
     for (var i = 0; i < layout.length; i++) {
       var wid = String(layout[i].id || "")
       if (wid === "" || wid === selfId) continue
-      rows.push({ wid: wid, label: prettyName(wid), glyph: iconFor(wid), hid: false })
+      rows.push({ wid: wid, label: prettyName(wid), glyph: iconFor(wid), hid: false,
+                  lit: visibleNow(wid) })
     }
     // Hidden entries come back at (or near) the spot they were hidden from.
     parked.sort(function(a, b) { return (a.index || 0) - (b.index || 0) })
@@ -136,7 +156,8 @@ Panel {
       var pw = String((parked[p].entry || {}).id || "")
       if (pw === "" || pw === selfId) continue
       var at = Math.min(Math.max(0, parked[p].index || 0), rows.length)
-      rows.splice(at, 0, { wid: pw, label: prettyName(pw), glyph: iconFor(pw), hid: true })
+      rows.splice(at, 0, { wid: pw, label: prettyName(pw), glyph: iconFor(pw), hid: true,
+                           lit: false })
     }
     for (var r = 0; r < rows.length; r++) model.append(rows[r])
   }
@@ -161,7 +182,10 @@ Panel {
   function toggleHidden(lane, i) {
     var m = modelFor(lane)
     if (i < 0 || i >= m.count) return
-    m.setProperty(i, "hid", !m.get(i).hid)
+    var nowHid = !m.get(i).hid
+    m.setProperty(i, "hid", nowHid)
+    // Optimistic: an un-parked widget lights up (it only actually draws after apply).
+    m.setProperty(i, "lit", !nowHid)
     dirty = true
   }
 
@@ -180,7 +204,7 @@ Panel {
     var m1 = modelFor(fromLane), m2 = modelFor(toLane)
     if (index < 0 || index >= m1.count) return
     var r = m1.get(index)
-    var row = { wid: r.wid, label: r.label, glyph: r.glyph, hid: r.hid }
+    var row = { wid: r.wid, label: r.label, glyph: r.glyph, hid: r.hid, lit: r.lit }
     m1.remove(index)
     at = Math.min(Math.max(0, at), m2.count)
     m2.insert(at, row)
@@ -252,7 +276,10 @@ Panel {
 
     readonly property int slotHeight: Style.space(34)
     width: parent.width
-    height: Math.max(1, count) * slotHeight   // ≥ one slot, so an empty lane is a drop target
+    // One empty slot beyond the last row, always — so there is visibly room to drop
+    // something at the end of either column (Dave, 2026-09-01), and an empty lane is
+    // still a drop target.
+    height: (count + 1) * slotHeight
     clip: false                               // a card dragged across the gap must stay visible
     interactive: false
     spacing: 0
@@ -311,7 +338,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           color: root.foreground
-          opacity: wrap.model.hid ? 0.4 : 0.8
+          opacity: wrap.model.lit ? 0.85 : 0.3
         }
 
         Text {
@@ -325,8 +352,9 @@ Panel {
           elide: Text.ElideRight
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
+          font.strikeout: wrap.model.hid        // crossed = our setting says hide
           color: root.foreground
-          opacity: wrap.model.hid ? 0.4 : 1
+          opacity: wrap.model.lit ? 1 : 0.45    // faded = drawing nothing right now
         }
 
         // Eye = shown, slashed eye = parked off the bar. Clicked through the drag
