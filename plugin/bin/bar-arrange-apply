@@ -67,12 +67,19 @@ for lane, wid, hid in want:
         ordered[lane].append(entry)
     pos[lane] += 1
 
-# Whatever was not named stays in its own lane, after the named ones.
+# Whatever was not named stays where it was: an unnamed VISIBLE entry keeps its lane,
+# after the named ones; an unnamed HIDDEN entry stays parked in the sidecar. That second
+# half was missing until 2026-09-01, and a caller that did not know about the sidecar
+# (the pre-hide panel, still rendering out of a stale shell) silently destroyed the
+# hidden Bluetooth entry through it.
 named = [e for lane in ("L", "R") for e in ordered[lane]] \
       + [r["entry"] for lane in ("L", "R") for r in parked[lane]]
 for sec, key in (("L", "left"), ("R", "right")):
     leftovers = [e for e in sections[sec] if not any(e is o for o in named)]
     layout[key] = ordered[sec] + leftovers
+    for row in parked_in[sec]:
+        if not any(row["entry"] is o for o in named):
+            parked[sec].append({"index": row.get("index", 0), "entry": row["entry"]})
 
 def write(p, obj):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix="." + os.path.basename(p) + ".")
