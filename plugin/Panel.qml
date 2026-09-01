@@ -44,12 +44,20 @@ Panel {
   readonly property string iconX: ""
   readonly property string iconEye: ""
   readonly property string iconEyeSlash: ""
+  readonly property string iconPencil: ""
+  readonly property string iconSave: ""
+  readonly property string iconRestore: ""
 
   property string curLane: "R"
   property int cursor: 0
   property bool dirty: false
   property bool cancelled: false
   property string loadError: ""
+  // The middle (workspaces) column: which row is being renamed inline (-1 = none), and
+  // whether renaming exists on this machine at all (workspace-edit is SER8-only — on the
+  // MacBook names come from the sync, so the pencil is not offered there).
+  property int wsEditing: -1
+  property bool canRename: false
 
   // Nothing on the bar: the panel is the whole widget.
   implicitWidth: 0
@@ -59,15 +67,15 @@ Panel {
   // last segment so a future widget still gets a readable row.
   function prettyName(wid) {
     var known = {
-      "omarchy.tray": "System tray",
+      "omarchy.tray": "System Tray",
       "omarchy.agents": "Agents",
       "omarchy.bluetooth": "Bluetooth",
       "omarchy.network": "Network",
       "omarchy.audio": "Audio",
-      "omarchy.monitor": "System monitor",
+      "omarchy.monitor": "System Monitor",
       "tinkerbell.mail": "Mail",
       "tinkerbell.messages": "Messages",
-      "tinkerbell.tray": "System tray",
+      "tinkerbell.tray": "System Tray",
       "limehawk.vpn": "VPN",
       "pestov.apple-music": "Apple Music",
       "jankeesvw.downloads": "Downloads",
@@ -75,16 +83,18 @@ Panel {
       "jankeesvw.notification-center": "Notifications",
       "omarchy.indicators": "Indicators",
       "omarchy.clock": "Clock",
-      "omarchy.keyboard-layout": "Keyboard layout",
-      "omarchy.system-update": "System update",
+      "omarchy.keyboard-layout": "Keyboard Layout",
+      "omarchy.system-update": "System Update",
       "omarchy.power": "Power",
       "omarchy.weather": "Weather",
       "omarchy.workspaces": "Workspaces",
       "omarchy.spacer": "Spacer"
     }
     if (known[wid] !== undefined) return known[wid]
+    // Unknown ids fall back to their id's last segment, Title Cased like the rest —
+    // the mixed casing bugged Dave (2026-09-01).
     var tail = String(wid).split(".").pop().replace(/-/g, " ")
-    return tail.charAt(0).toUpperCase() + tail.slice(1)
+    return tail.replace(/\b[a-z]/g, function(c) { return c.toUpperCase() })
   }
 
   // The glyph each widget wears on the bar (Dave, 2026-09-01: "🎧 Audio" not "Audio"),
@@ -138,8 +148,63 @@ Panel {
 
   ListModel { id: lmL }
   ListModel { id: lmR }
+  ListModel { id: lmW }   // the desks, middle column
 
   function modelFor(lane) { return lane === "L" ? lmL : lmR }
+
+  // Desks come from Hyprland itself (works on both machines); recordings from the
+  // HYPER+S snapshot directory. Reordering desks is deliberately NOT offered: a desk's
+  // NUMBER is load-bearing in four places that do not read each other (AGENTS.md names
+  // them), so renumbering is a hands-on job, never a drag.
+  function fillWorkspaces(wsJson, activeJson, snapText) {
+    lmW.clear()
+    var active = -1
+    try { active = JSON.parse(activeJson).id } catch (e) {}
+    var snaps = {}
+    var lines = String(snapText || "").split("\n")
+    for (var s = 0; s < lines.length; s++) {
+      var m = lines[s].match(/^ws(\d+)\.json$/)
+      if (m) snaps[parseInt(m[1], 10)] = true
+    }
+    var list = []
+    try { list = JSON.parse(wsJson) } catch (e2) { return }
+    list.sort(function(a, b) { return a.id - b.id })
+    for (var i = 0; i < list.length; i++) {
+      var w = list[i]
+      if (w.id < 1) continue   // scratchpads / specials
+      var nm = String(w.name || "")
+      if (nm === "" || nm === String(w.id)) nm = "Desk " + w.id
+      lmW.append({ num: w.id, name: nm, focused: w.id === active, hasSnap: snaps[w.id] === true })
+    }
+  }
+
+  function wsFocus(n) {
+    wsActProc.command = ["hyprctl", "dispatch", 'hl.dsp.focus({ workspace = "' + n + '" })']
+    wsActProc.running = true
+  }
+  function wsSave(n) {
+    wsActProc.command = ["sh", "-c",
+      '"$HOME/.config/omarchy/workspace-layout/ws-layout" snapshot ' + n]
+    wsActProc.running = true
+    var m = rowForWs(n); if (m >= 0) lmW.setProperty(m, "hasSnap", true)
+  }
+  function wsRestore(n) {
+    wsActProc.command = ["sh", "-c",
+      '"$HOME/.config/omarchy/workspace-layout/ws-layout" restore ' + n]
+    wsActProc.running = true
+  }
+  function wsRename(n, name) {
+    name = String(name || "").trim()
+    if (name === "") return
+    wsActProc.command = ["sh", "-c",
+      '"$HOME/.local/bin/workspace-edit" set ' + n + " --name " + JSON.stringify(name)]
+    wsActProc.running = true
+    var m = rowForWs(n); if (m >= 0) lmW.setProperty(m, "name", name)
+  }
+  function rowForWs(n) {
+    for (var i = 0; i < lmW.count; i++) if (lmW.get(i).num === n) return i
+    return -1
+  }
 
   function fillLane(model, layout, parked) {
     model.clear()
@@ -168,13 +233,20 @@ Panel {
       // Two files ride one cat (see readProc): shell.json, a marker, bar-hidden.json.
       var parts = text.split("---BARHIDDEN---")
       var layout = JSON.parse(parts[0]).bar.layout
+      var rest = String(parts[1] || "").split("---WS---")
       var parked = {}
-      try { parked = JSON.parse(parts[1] || "{}") } catch (e2) {}
+      try { parked = JSON.parse(rest[0] || "{}") } catch (e2) {}
       fillLane(lmL, layout.left || [], parked.left || [])
       fillLane(lmR, layout.right || [], parked.right || [])
+      var tail = String(rest[1] || "").split("---ACTIVE---")
+      var tail2 = String(tail[1] || "").split("---SNAPS---")
+      var tail3 = String(tail2[1] || "").split("---CANRENAME---")
+      fillWorkspaces(tail[0] || "[]", tail2[0] || "{}", tail3[0] || "")
+      canRename = String(tail3[1] || "").trim() !== ""
     } catch (e) {
       loadError = "Could not read the bar layout file."
     }
+    wsEditing = -1
     curLane = lmR.count > 0 ? "R" : "L"
     cursor = 0
   }
@@ -246,7 +318,10 @@ Panel {
       dirty = false
       cancelled = false
       readProc.command = ["sh", "-c",
-        "cat \"$HOME/.config/omarchy/shell.json\"; echo ---BARHIDDEN---; cat \"$HOME/.config/omarchy/bar-hidden.json\" 2>/dev/null || echo '{}'"]
+        "cat \"$HOME/.config/omarchy/shell.json\"; echo ---BARHIDDEN---; cat \"$HOME/.config/omarchy/bar-hidden.json\" 2>/dev/null || echo '{}'; " +
+        "echo ---WS---; hyprctl workspaces -j 2>/dev/null; echo ---ACTIVE---; hyprctl activeworkspace -j 2>/dev/null; " +
+        "echo ---SNAPS---; ls \"$HOME/.config/omarchy/workspace-layout/snapshots\" 2>/dev/null; " +
+        "echo ---CANRENAME---; command -v \"$HOME/.local/bin/workspace-edit\" 2>/dev/null || true"]
       readProc.running = true
     } else if (dirty && !cancelled) {
       apply()
@@ -262,6 +337,12 @@ Panel {
 
   Process {
     id: applyProc
+  }
+
+  // One desk action at a time (focus / save / restore / rename) — each tool it calls
+  // does its own toasting, so nothing is echoed here.
+  Process {
+    id: wsActProc
   }
 
   // The row delegate both columns share. Drag within a column reorders live; drag past
@@ -423,12 +504,14 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(520))
+    contentWidth: panel.fittedContentWidth(Style.space(780))
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // While a desk is being renamed inline, every key belongs to the editor.
+      blocked: root.wsEditing >= 0
       // Escape CANCELS (nothing written); Enter and click-away APPLY.
       onCloseRequested: root.cancelAndClose()
       onActivateRequested: root.acceptAndClose()
@@ -522,7 +605,7 @@ Panel {
           width: parent.width
           spacing: Style.space(14)
 
-          readonly property real colWidth: (width - spacing * 2 - 1) / 2
+          readonly property real colWidth: (width - spacing * 4 - 2) / 3
 
           Column {
             id: colL
@@ -563,7 +646,168 @@ Panel {
           // The faint rule between the lanes (Dave, 2026-09-01).
           Rectangle {
             width: 1
-            height: Math.max(colL.height, colR.height)
+            height: Math.max(colL.height, Math.max(colW.height, colR.height))
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          }
+
+          // The desks, in the middle — where they sit on the bar (Dave, 2026-09-01 🎊).
+          // Click a name to go there; the pencil renames (SER8 only — the sync owns the
+          // MacBook's names), the floppy records the desk's layout (HYPER+S), the arrow
+          // puts the recording back (HYPER+R). No dragging here: renumbering a desk is
+          // load-bearing in four places (see fillWorkspaces).
+          Column {
+            id: colW
+            width: laneRow.colWidth
+            spacing: 0
+
+            Text {
+              width: parent.width
+              text: "WORKSPACES"
+              textFormat: Text.PlainText
+              horizontalAlignment: Text.AlignHCenter
+              topPadding: 0
+              bottomPadding: Style.space(8)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+              color: Qt.darker(root.foreground, 1.6)
+            }
+
+            Rectangle {
+              width: parent.width
+              height: 1
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            }
+
+            Item { width: 1; height: Style.space(4) }
+
+            Repeater {
+              model: lmW
+
+              delegate: Item {
+                id: wrow
+                required property var model
+                required property int index
+
+                width: colW.width
+                height: Style.space(34)
+
+                Rectangle {
+                  id: wcard
+                  width: wrow.width
+                  height: wrow.height - Style.space(4)
+                  y: Style.space(2)
+                  radius: Style.cornerRadius
+                  color: wrow.model.focused
+                    ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+                    : nameArea.containsMouse
+                      ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+                      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+
+                  Text {
+                    id: wnum
+                    anchors.left: parent.left
+                    anchors.leftMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: wrow.model.num
+                    textFormat: Text.PlainText
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    color: Qt.darker(root.foreground, 1.6)
+                  }
+
+                  Text {
+                    id: wname
+                    visible: root.wsEditing !== wrow.index
+                    anchors.left: wnum.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.right: wpencil.left
+                    anchors.rightMargin: Style.space(6)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: wrow.model.name
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    color: root.foreground
+                  }
+
+                  TextField {
+                    id: wedit
+                    visible: root.wsEditing === wrow.index
+                    anchors.left: wnum.right
+                    anchors.leftMargin: Style.space(4)
+                    anchors.right: wpencil.left
+                    anchors.rightMargin: Style.space(6)
+                    anchors.verticalCenter: parent.verticalCenter
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    color: root.foreground
+                    onVisibleChanged: if (visible) { text = wrow.model.name; forceActiveFocus(); selectAll() }
+                    onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
+                    Keys.onEscapePressed: root.wsEditing = -1
+                  }
+
+                  MouseArea {
+                    id: nameArea
+                    anchors.left: parent.left
+                    anchors.right: wpencil.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    hoverEnabled: true
+                    enabled: root.wsEditing !== wrow.index
+                    onClicked: root.wsFocus(wrow.model.num)
+                  }
+
+                  PanelActionButton {
+                    id: wpencil
+                    visible: root.canRename
+                    anchors.right: wsave.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: root.iconPencil
+                    tooltipText: "Rename"
+                    foreground: root.foreground
+                    hoverColor: root.accent
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    onClicked: root.wsEditing = root.wsEditing === wrow.index ? -1 : wrow.index
+                  }
+
+                  PanelActionButton {
+                    id: wsave
+                    anchors.right: wrestore.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: root.iconSave
+                    tooltipText: "Save layout (HYPER+S)"
+                    foreground: root.foreground
+                    hoverColor: root.accent
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    onClicked: root.wsSave(wrow.model.num)
+                  }
+
+                  PanelActionButton {
+                    id: wrestore
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(2)
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: root.iconRestore
+                    tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
+                    foreground: root.foreground
+                    hoverColor: root.accent
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    opacity: wrow.model.hasSnap ? 1 : 0.3
+                    onClicked: if (wrow.model.hasSnap) root.wsRestore(wrow.model.num)
+                  }
+                }
+              }
+            }
+          }
+
+          Rectangle {
+            width: 1
+            height: Math.max(colL.height, Math.max(colW.height, colR.height))
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
           }
 
@@ -606,7 +850,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "drag rows, across too  ·  j/k h/l + J/K H/L  ·  eye / x hides  ·  Enter applies  ·  Esc cancels"
+          text: "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
           textFormat: Text.PlainText
           elide: Text.ElideRight
           font.family: root.fontFamily
