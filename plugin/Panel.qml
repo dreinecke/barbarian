@@ -32,6 +32,8 @@ Panel {
 
   readonly property string applyScript:
     Qt.resolvedUrl("bin/bar-arrange-apply").toString().replace(/^file:\/\//, "")
+  readonly property string pickScript:
+    Qt.resolvedUrl("bin/ws-bg-pick").toString().replace(/^file:\/\//, "")
   // This widget must never list (or reorder away) itself.
   readonly property string selfId: "tinkerbell.arrange"
 
@@ -48,6 +50,7 @@ Panel {
   readonly property string iconEyeSlash: ""
   readonly property string iconPencil: ""
   readonly property string iconSave: ""
+  readonly property string iconImage: "󰥶"
   readonly property string iconRestore: ""
 
   property string curLane: "R"
@@ -68,6 +71,10 @@ Panel {
   // The strip's widget id as found in the layout (tinkerbell.workspaces here,
   // omarchy.workspaces stock) — the apply script moves it whole between sections.
   property string wsWidgetId: ""
+  // The background picker (Dave, 2026-09-01): which desk's thumbnail strip is open
+  // (-1 = none), and the current theme's background images to offer.
+  property int bgPicking: -1
+  property var bgThemeList: []
 
   // The hero's subtitle: one bar pun per opening, cycling through the lot. The pool
   // is Dave-curated (2026-09-01, a 58-strong long-list cut to these survivors).
@@ -213,7 +220,8 @@ Panel {
   // HYPER+S snapshot directory. Reordering desks is deliberately NOT offered: a desk's
   // NUMBER is load-bearing in four places that do not read each other (AGENTS.md names
   // them), so renumbering is a hands-on job, never a drag.
-  function fillWorkspaces(wsJson, activeJson, snapText) {
+  function fillWorkspaces(wsJson, activeJson, snapText, pins) {
+    pins = pins || {}
     lmW.clear()
     var active = -1
     try { active = JSON.parse(activeJson).id } catch (e) {}
@@ -231,7 +239,8 @@ Panel {
       if (w.id < 1) continue   // scratchpads / specials
       var nm = String(w.name || "")
       if (nm === "" || nm === String(w.id)) nm = "Desk " + w.id
-      lmW.append({ num: w.id, name: nm, focused: w.id === active, hasSnap: snaps[w.id] === true })
+      lmW.append({ num: w.id, name: nm, focused: w.id === active, hasSnap: snaps[w.id] === true,
+                   bgPin: String(pins[w.id] || "") })
     }
   }
 
@@ -258,6 +267,17 @@ Panel {
     wsActProc.running = true
     var m = rowForWs(n); if (m >= 0) lmW.setProperty(m, "name", name)
   }
+  // Pin desk n's wallpaper (or "default" to unpin). ws-bg-pick moves the pin file and
+  // repaints immediately if n is the desk on screen; the row updates optimistically.
+  function bgPick(n, path) {
+    wsActProc.command = ["sh", "-c",
+      '"' + pickScript + '" ' + n + " " + JSON.stringify(path)]
+    wsActProc.running = true
+    var m = rowForWs(n)
+    if (m >= 0) lmW.setProperty(m, "bgPin", path === "default" ? "" : path)
+    bgPicking = -1
+  }
+
   function rowForWs(n) {
     for (var i = 0; i < lmW.count; i++) if (lmW.get(i).num === n) return i
     return -1
@@ -317,12 +337,25 @@ Panel {
       var tail = String(rest[1] || "").split("---ACTIVE---")
       var tail2 = String(tail[1] || "").split("---SNAPS---")
       var tail3 = String(tail2[1] || "").split("---CANRENAME---")
-      fillWorkspaces(tail[0] || "[]", tail2[0] || "{}", tail3[0] || "")
-      canRename = String(tail3[1] || "").trim() !== ""
+      var tail4 = String(tail3[1] || "").split("---BGS---")
+      var tail5 = String(tail4[1] || "").split("---PINS---")
+      canRename = String(tail4[0] || "").trim() !== ""
+      var bgs = [], bl = String(tail5[0] || "").split("\n")
+      for (var bi = 0; bi < bl.length; bi++)
+        if (/\.(jpg|jpeg|png)$/i.test(bl[bi].trim())) bgs.push(bl[bi].trim())
+      bgThemeList = bgs
+      var pins = {}
+      var pl = String(tail5[1] || "").split("\n")
+      for (var pi = 0; pi < pl.length; pi++) {
+        var pm = pl[pi].match(/\/ws(\d+)\.[A-Za-z]+\|(.+)$/)
+        if (pm) pins[parseInt(pm[1], 10)] = pm[2].trim()
+      }
+      fillWorkspaces(tail[0] || "[]", tail2[0] || "{}", tail3[0] || "", pins)
     } catch (e) {
       loadError = "Could not read the bar layout file."
     }
     wsEditing = -1
+    bgPicking = -1
     var lanes = laneOrder()
     curLane = lanes[0]
     for (var li = 0; li < lanes.length; li++)
@@ -419,7 +452,9 @@ Panel {
         "cat \"$HOME/.config/omarchy/shell.json\"; echo ---BARHIDDEN---; cat \"$HOME/.config/omarchy/bar-hidden.json\" 2>/dev/null || echo '{}'; " +
         "echo ---WS---; hyprctl workspaces -j 2>/dev/null; echo ---ACTIVE---; hyprctl activeworkspace -j 2>/dev/null; " +
         "echo ---SNAPS---; ls \"$HOME/.config/omarchy/workspace-layout/snapshots\" 2>/dev/null; " +
-        "echo ---CANRENAME---; command -v \"$HOME/.local/bin/workspace-edit\" 2>/dev/null || true"]
+        "echo ---CANRENAME---; command -v \"$HOME/.local/bin/workspace-edit\" 2>/dev/null || true; " +
+        "echo ---BGS---; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; find \"$d\" -maxdepth 1 -type f 2>/dev/null | sort; " +
+        "echo ---PINS---; for f in \"$HOME/.config/omarchy/workspace-backgrounds\"/ws*.*; do [ -e \"$f\" ] && echo \"$f|$(readlink -f \"$f\")\"; done; true"]
       readProc.running = true
     } else if (dirty && !cancelled) {
       apply()
@@ -626,6 +661,7 @@ Panel {
 
         width: dlist.width
         height: Style.space(34)
+          + (root.bgPicking === wrow.model.num ? bgFlow.implicitHeight + Style.space(6) : 0)
 
         Rectangle {
           id: wcard
@@ -656,7 +692,7 @@ Panel {
             visible: root.wsEditing !== wrow.index
             anchors.left: wnum.right
             anchors.leftMargin: Style.space(8)
-            anchors.right: wpencil.left
+            anchors.right: wimg.left
             anchors.rightMargin: Style.space(6)
             anchors.verticalCenter: parent.verticalCenter
             text: wrow.model.name
@@ -672,7 +708,7 @@ Panel {
             visible: root.wsEditing === wrow.index
             anchors.left: wnum.right
             anchors.leftMargin: Style.space(4)
-            anchors.right: wpencil.left
+            anchors.right: wimg.left
             anchors.rightMargin: Style.space(6)
             anchors.verticalCenter: parent.verticalCenter
             font.family: root.fontFamily
@@ -686,12 +722,26 @@ Panel {
           MouseArea {
             id: nameArea
             anchors.left: parent.left
-            anchors.right: wpencil.left
+            anchors.right: wimg.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             hoverEnabled: true
             enabled: root.wsEditing !== wrow.index
             onClicked: root.wsFocus(wrow.model.num)
+          }
+
+          PanelActionButton {
+            id: wimg
+            anchors.right: wpencil.left
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.iconImage
+            tooltipText: "Background"
+            // Accent when this desk has a pinned image of its own.
+            foreground: wrow.model.bgPin !== "" ? root.accent : Qt.darker(root.foreground, 1.8)
+            hoverColor: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.bgPicking = root.bgPicking === wrow.model.num ? -1 : wrow.model.num
           }
 
           PanelActionButton {
@@ -734,6 +784,68 @@ Panel {
             fontSize: Style.font.caption
             opacity: wrow.model.hasSnap ? 1 : 0.3
             onClicked: if (wrow.model.hasSnap) root.wsRestore(wrow.model.num)
+          }
+        }
+
+        // The picker: Auto (no pin — the blanket/theme chain decides, see
+        // per-workspace-wallpaper.sh) plus the current theme's backgrounds.
+        Flow {
+          id: bgFlow
+          visible: root.bgPicking === wrow.model.num
+          anchors.top: wcard.bottom
+          anchors.topMargin: Style.space(2)
+          width: wrow.width
+          spacing: Style.space(4)
+
+          Rectangle {
+            width: Style.space(56)
+            height: Style.space(32)
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+            border.width: wrow.model.bgPin === "" ? 2 : 1
+            border.color: wrow.model.bgPin === "" ? root.accent
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+            Text {
+              anchors.centerIn: parent
+              text: "Auto"
+              textFormat: Text.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              color: root.muted
+            }
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.bgPick(wrow.model.num, "default")
+            }
+          }
+
+          Repeater {
+            model: root.bgThemeList
+
+            delegate: Rectangle {
+              required property var modelData
+              width: Style.space(56)
+              height: Style.space(32)
+              radius: Style.cornerRadius
+              color: "transparent"
+              border.width: wrow.model.bgPin === modelData ? 2 : 1
+              border.color: wrow.model.bgPin === modelData ? root.accent
+                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+              Image {
+                anchors.fill: parent
+                anchors.margins: 2
+                source: "file://" + modelData
+                sourceSize.width: 160
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+              }
+              MouseArea {
+                anchors.fill: parent
+                onClicked: root.bgPick(wrow.model.num, modelData)
+              }
+            }
           }
         }
       }

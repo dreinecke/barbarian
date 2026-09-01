@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# ws-bg-pick <N> <image-path|default> — pin one desk's wallpaper, or unpin it.
+#
+# Barbarian's background picker (Dave, 2026-09-01). The pin is a ws<N>.<ext> symlink in
+# the workspace-backgrounds folder — the strongest rule in per-workspace-wallpaper.sh's
+# chain (pin → all.<ext> → the theme's Nth image). "default" removes the pin, so the
+# desk falls back down that chain. What each rule means, and why the pin wins, is
+# documented in that script, which also owns ALL the resolution logic: this one only
+# moves the pin files, then asks the watcher script to repaint via its one-shot
+# `apply` mode — and only when the pinned desk is the one on screen, because the
+# watcher wakes on workspace switches and would otherwise paint desk N's image onto
+# whatever desk is showing.
+set -euo pipefail
+
+N="${1:?usage: ws-bg-pick <N> <image-path|default>}"
+CHOICE="${2:?usage: ws-bg-pick <N> <image-path|default>}"
+case "$N" in ''|*[!0-9]*) echo "ws-bg-pick: '$N' is not a workspace number" >&2; exit 1 ;; esac
+
+DIR="$HOME/.config/omarchy/workspace-backgrounds"
+WATCHER="$DIR/per-workspace-wallpaper.sh"
+mkdir -p "$DIR"
+
+rm -f "$DIR/ws$N".*
+if [ "$CHOICE" != "default" ]; then
+  SRC="$(realpath "$CHOICE")"
+  [ -f "$SRC" ] || { echo "ws-bg-pick: no such image: $SRC" >&2; exit 1; }
+  ext="${SRC##*.}"
+  ln -sf "$SRC" "$DIR/ws$N.$ext"
+fi
+
+active="$(hyprctl activeworkspace -j 2>/dev/null | grep -oP '"id":\s*\K[0-9]+' | head -1 || true)"
+[ "$active" = "$N" ] || exit 0
+[ -x "$WATCHER" ] && exec "$WATCHER" apply "$N"

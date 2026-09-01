@@ -139,6 +139,15 @@ apply() {
   omarchy-shell -q background "$METHOD" "$want" >/dev/null 2>&1
 }
 
+# One-shot mode: `per-workspace-wallpaper.sh apply [N]` resolves one desk's image NOW and
+# exits — Barbarian's background picker (the plugin's bin/ws-bg-pick) calls this after
+# moving a pin, because the watcher half below only wakes on workspace SWITCHES. Same
+# rules, same code — the resolution logic lives only here.
+if [ "${1:-}" = "apply" ]; then
+  apply "${2:-$(hyprctl activeworkspace -j 2>/dev/null | grep -oP '"id":\s*\K[0-9]+' | head -1)}"
+  exit 0
+fi
+
 # Paint the workspace we start on, so the wallpaper is right before the first switch rather than
 # after it.
 apply "$(hyprctl activeworkspace -j 2>/dev/null | grep -oP '"id":\s*\K[0-9]+' | head -1)"
