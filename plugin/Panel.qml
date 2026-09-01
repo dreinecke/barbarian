@@ -147,8 +147,8 @@ Panel {
   // icon slot keeps the names aligned either way.
   function iconFor(wid) {
     var icons = {
-      "omarchy.tray": "",
-      "tinkerbell.tray": "",
+      "omarchy.tray": "󰍜",
+      "tinkerbell.tray": "󰍜",
       "tinkerbell.mail": "",
       "tinkerbell.messages": "",
       "omarchy.agents": "󱚣",
