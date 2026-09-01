@@ -1,47 +1,74 @@
 #!/usr/bin/env bash
-# bar-arrange-apply <widget-id>... — rewrite the RIGHT section of ~/.config/omarchy/shell.json
-# to the given id order. Each entry's own settings (the clock's formats, sizes) travel with it
-# untouched, because entries are reordered as whole objects, never rebuilt. Ids in the file but
-# not in the arguments (the invisible tinkerbell.arrange widget itself) keep their place at the
-# end. The write is tmp+rename, so a crash mid-write cannot half-eat the bar.
+# bar-arrange-apply <widget-id>[:hidden]... — rewrite the RIGHT section of
+# ~/.config/omarchy/shell.json to the given order, and park ids marked :hidden in
+# ~/.config/omarchy/bar-hidden.json (Dave, 2026-09-01: "things like the Bluetooth one
+# which is noise/clutter 99% of the time but occasionally I want" — hiding must be
+# reversible from the same panel, so a hidden entry is MOVED to the sidecar with its
+# whole settings object and its list position, never deleted).
 #
-# Refuses rather than guesses: an argument that names no current right-section entry, or names
-# one twice, aborts with the file unchanged.
+# Entries travel as whole objects, so per-widget settings (the clock's formats) survive
+# both a reorder and a hide/show round-trip. Ids in the file but not in the arguments
+# (the invisible tinkerbell.arrange widget itself) keep their place at the end. Both
+# writes are tmp+rename, so a crash mid-write cannot half-eat the bar.
+#
+# Refuses rather than guesses: an argument that names no current entry (right section or
+# sidecar), or names one twice, aborts with both files unchanged.
 set -euo pipefail
 python3 - "$@" <<'PY'
 import json, os, sys, tempfile
 
 path = os.path.expanduser("~/.config/omarchy/shell.json")
-want = sys.argv[1:]
-if not want:
+side = os.path.expanduser("~/.config/omarchy/bar-hidden.json")
+if not sys.argv[1:]:
     sys.exit("bar-arrange-apply: no ids given")
+
+want = []  # (id, hidden)
+for arg in sys.argv[1:]:
+    wid, _, flag = arg.partition(":")
+    want.append((wid, flag == "hidden"))
 
 with open(path) as f:
     data = json.load(f)
 right = data["bar"]["layout"]["right"]
 
+hidden_rows = []
+if os.path.exists(side):
+    with open(side) as f:
+        hidden_rows = json.load(f).get("right", [])
+
 pools = {}
 for entry in right:
     pools.setdefault(entry["id"], []).append(entry)
+for row in hidden_rows:
+    pools.setdefault(row["entry"]["id"], []).append(row["entry"])
 
-ordered = []
-for wid in want:
+ordered, parked = [], []
+for pos, (wid, hid) in enumerate(want):
     pool = pools.get(wid)
     if not pool:
-        sys.exit(f"bar-arrange-apply: '{wid}' is not in the right section (or named twice)")
-    ordered.append(pool.pop(0))
+        sys.exit(f"bar-arrange-apply: '{wid}' is not in the right section or hidden list (or named twice)")
+    entry = pool.pop(0)
+    if hid:
+        parked.append({"index": pos, "entry": entry})
+    else:
+        ordered.append(entry)
 
 # Whatever was not named keeps its relative order, after the named ones.
-leftovers = [e for e in right if not any(e is o for o in ordered)]
+named = ordered + [r["entry"] for r in parked]
+leftovers = [e for e in right if not any(e is o for o in named)]
 data["bar"]["layout"]["right"] = ordered + leftovers
 
-fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".shell.json.")
-try:
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
-except BaseException:
-    os.unlink(tmp)
-    raise
+def write(p, obj):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix="." + os.path.basename(p) + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, p)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+write(path, data)
+write(side, {"right": parked})
 PY

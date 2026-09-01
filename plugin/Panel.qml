@@ -10,11 +10,14 @@ import qs.Ui
 // overwritten on every Omarchy update). Dave, 2026-08-31, offered this as the sturdy
 // version of "hold hyper and drag the bar" — "The word :)".
 //
-// How it works: the panel reads shell.json's right section into a list; rows are DRAGGED
-// with the mouse or nudged with keys, which only reorders the list; the file is written
+// How it works: the panel reads shell.json's right section — plus the hidden entries
+// parked in bar-hidden.json — into one list; rows are DRAGGED with the mouse or nudged
+// with keys, and the eye button (or `x`) hides/shows a row (Dave, 2026-09-01: Bluetooth
+// is "noise/clutter 99% of the time but occasionally I want" it back). Files are written
 // ONCE, when the panel closes (Enter, click-away) — Escape throws the changes away. The
 // write goes through bin/bar-arrange-apply, which moves whole entries so per-widget
-// settings (the clock's formats) travel untouched, and the bar hot-reloads on the write.
+// settings (the clock's formats) travel untouched — a hidden entry is parked in the
+// sidecar with its settings and position, never deleted — and the bar hot-reloads.
 //
 // The widget itself draws NOTHING on the bar (zero width) — it exists so the shell loads
 // this panel and gives it an IPC target. HYPER+B toggles it (bindings.lua).
@@ -36,6 +39,8 @@ Panel {
   readonly property string iconGrip: "\uF0C9"
   readonly property string iconCheck: "\uF00C"
   readonly property string iconX: "\uF00D"
+  readonly property string iconEye: "\uF06E"
+  readonly property string iconEyeSlash: "\uF070"
 
   property int cursor: 0
   property bool dirty: false
@@ -81,16 +86,36 @@ Panel {
     lm.clear()
     loadError = ""
     try {
-      var layout = JSON.parse(text).bar.layout.right
+      // Two files ride one cat (see readProc): shell.json, a marker, bar-hidden.json.
+      var parts = text.split("---BARHIDDEN---")
+      var layout = JSON.parse(parts[0]).bar.layout.right
+      var rows = []
       for (var i = 0; i < layout.length; i++) {
         var wid = String(layout[i].id || "")
         if (wid === "" || wid === selfId) continue
-        lm.append({ wid: wid, label: prettyName(wid) })
+        rows.push({ wid: wid, label: prettyName(wid), hid: false })
       }
+      // Hidden entries come back at (or near) the spot they were hidden from.
+      var parked = []
+      try { parked = JSON.parse(parts[1] || "{}").right || [] } catch (e2) {}
+      parked.sort(function(a, b) { return (a.index || 0) - (b.index || 0) })
+      for (var p = 0; p < parked.length; p++) {
+        var pw = String((parked[p].entry || {}).id || "")
+        if (pw === "" || pw === selfId) continue
+        var at = Math.min(Math.max(0, parked[p].index || 0), rows.length)
+        rows.splice(at, 0, { wid: pw, label: prettyName(pw), hid: true })
+      }
+      for (var r = 0; r < rows.length; r++) lm.append(rows[r])
     } catch (e) {
       loadError = "Could not read the bar layout file."
     }
     cursor = 0
+  }
+
+  function toggleHidden(i) {
+    if (i < 0 || i >= lm.count) return
+    lm.setProperty(i, "hid", !lm.get(i).hid)
+    dirty = true
   }
 
   function moveItem(from, to) {
@@ -108,7 +133,8 @@ Panel {
   function apply() {
     if (applyProc.running) return
     var argv = [applyScript]
-    for (var i = 0; i < lm.count; i++) argv.push(lm.get(i).wid)
+    for (var i = 0; i < lm.count; i++)
+      argv.push(lm.get(i).wid + (lm.get(i).hid ? ":hidden" : ""))
     applyProc.command = argv
     applyProc.running = true
   }
@@ -120,7 +146,8 @@ Panel {
     if (opened) {
       dirty = false
       cancelled = false
-      readProc.command = ["sh", "-c", "cat \"$HOME/.config/omarchy/shell.json\""]
+      readProc.command = ["sh", "-c",
+        "cat \"$HOME/.config/omarchy/shell.json\"; echo ---BARHIDDEN---; cat \"$HOME/.config/omarchy/bar-hidden.json\" 2>/dev/null || echo '{}'"]
       readProc.running = true
     } else if (dirty && !cancelled) {
       apply()
@@ -155,6 +182,8 @@ Panel {
       onCloseRequested: root.cancelAndClose()
       onActivateRequested: root.acceptAndClose()
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      // x (PanelKeyCatcher's delete key) hides/shows the selected row.
+      onDeleteRequested: root.toggleHidden(root.cursor)
       // j/k walk, J/K carry the selected row with them (vim senses: J down, K up).
       onTextKey: function(t) {
         if (t === "j") root.moveCursor(1)
@@ -288,7 +317,7 @@ Panel {
               Text {
                 anchors.left: grip.right
                 anchors.leftMargin: Style.space(8)
-                anchors.right: pos.left
+                anchors.right: eye.left
                 anchors.rightMargin: Style.space(6)
                 anchors.verticalCenter: parent.verticalCenter
                 text: wrap.model.label
@@ -297,6 +326,22 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 color: root.foreground
+                opacity: wrap.model.hid ? 0.4 : 1
+              }
+
+              // Eye = shown, slashed eye = parked off the bar. Clicked through the
+              // drag area's hit test below (a sibling MouseArea would sit under it).
+              Text {
+                id: eye
+                anchors.right: pos.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                text: wrap.model.hid ? root.iconEyeSlash : root.iconEye
+                textFormat: Text.PlainText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                color: wrap.model.hid ? Qt.darker(root.foreground, 1.6) : root.foreground
+                opacity: wrap.model.hid ? 0.8 : 0.55
               }
 
               Text {
@@ -309,6 +354,7 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 color: Qt.darker(root.foreground, 1.7)
+                opacity: wrap.model.hid ? 0.4 : 1
               }
             }
 
@@ -320,6 +366,12 @@ Panel {
               drag.target: card
               drag.axis: Drag.YAxis
               onContainsMouseChanged: if (containsMouse) root.cursor = wrap.index
+              onClicked: function(mouse) {
+                var p = dragArea.mapToItem(eye, mouse.x, mouse.y)
+                if (p.x > -Style.space(6) && p.x < eye.width + Style.space(6)
+                    && p.y > -Style.space(8) && p.y < eye.height + Style.space(8))
+                  root.toggleHidden(wrap.index)
+              }
               onPositionChanged: {
                 if (!drag.active) return
                 var centerY = card.mapToItem(list.contentItem, 0, card.height / 2).y
@@ -335,7 +387,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "drag rows, or j/k + J/K  ·  Enter applies  ·  Esc cancels"
+          text: "drag or j/k + J/K  ·  eye / x hides  ·  Enter applies  ·  Esc cancels"
           textFormat: Text.PlainText
           elide: Text.ElideRight
           font.family: root.fontFamily
