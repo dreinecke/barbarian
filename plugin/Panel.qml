@@ -534,7 +534,10 @@ Panel {
               text: "LEFT"
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
-              topPadding: Style.space(8)
+              // The content column already puts space(6) above this heading, so the
+              // top padding is smaller by that much — measured centred, not assumed
+              // (Dave caught the first cut sitting low, 2026-09-01).
+              topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -574,7 +577,10 @@ Panel {
               text: "RIGHT"
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
-              topPadding: Style.space(8)
+              // The content column already puts space(6) above this heading, so the
+              // top padding is smaller by that much — measured centred, not assumed
+              // (Dave caught the first cut sitting low, 2026-09-01).
+              topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
