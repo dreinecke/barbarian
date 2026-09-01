@@ -60,26 +60,16 @@ Panel {
   property int wsEditing: -1
   property bool canRename: false
 
-  // The hero's subtitle: one bar pun per opening, cycling through the lot (Dave,
-  // 2026-09-01: "as many bar related sayings and plays on words as we can find").
+  // The hero's subtitle: one bar pun per opening, cycling through the lot. The pool
+  // is Dave-curated (2026-09-01, a 58-strong long-list cut to these survivors).
   // Starts somewhere random so a shell restart does not reset the tour to the top.
   readonly property var mottos: [
     "No holds barred", "Barbarians at the gate", "Barred from entering",
     "Hanna-Barbera", "Bar-ram-ewe", "Bar bar black sheep", "Obarma care",
-    "Raising the bar", "Bar none", "Behind bars", "Passed the bar exam",
-    "Called to the bar", "Belly up to the bar", "Open bar", "Minibar",
-    "Salad bar", "Space bar", "Crowbar", "Isobar", "Sandbar", "Rebar",
-    "Handlebar moustache", "Chocolate bar", "Bar mitzvah",
-    "Barbershop quartet", "Top of the bar charts", "Barometer rising",
-    "Wheelbarrow", "Barcelona", "Barbados", "Barracuda", "Bar humbug",
-    "Milky Bar Kid", "A low bar, cleared", "Bar fight club", "Embargo lifted",
-    "Conan the librarian",
-    // The next batch is harvested from Dave's own Gemini pun hunt (2026-09-01).
-    "Bar-t Simpson", "Boba Bar-fett", "Bar-ad-d\u00fbr", "Bar-bie World",
-    "Babar the Elephant", "Bar-ack Obama", "Bar-uch Spinoza", "Bar-barossa",
-    "Bar-bra Streisand", "Bar-carole", "Granola bar", "Bar-becue",
-    "Bar-ley legal", "A-bar-cadabra", "Foo-bar", "Bar-itone", "Side-bar",
-    "Bar-gain", "Bar Harbor"
+    "Raising the bar", "Bar none", "Behind bars", "The bar exam",
+    "Salad bar", "Space bar", "Crowbar", "Handlebar moustache",
+    "Chocolate bar", "Bar humbug", "Granola bar", "Foo-bar",
+    "Nothing bar the truth", "Two icons walk into a bar"
   ]
   property int motto: Math.floor(Math.random() * 9973)
 
