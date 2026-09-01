@@ -427,19 +427,19 @@ Panel {
           anchors.left: parent.left
           anchors.leftMargin: Style.space(8)
           anchors.verticalCenter: parent.verticalCenter
-          width: Style.space(16)
+          width: Style.space(22)
           horizontalAlignment: Text.AlignHCenter
           text: wrap.model.glyph
           textFormat: Text.PlainText
           font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          font.pixelSize: Style.font.title
           color: root.foreground
           opacity: wrap.model.lit ? 0.85 : 0.3
         }
 
         Text {
           anchors.left: glyphSlot.right
-          anchors.leftMargin: Style.space(6)
+          anchors.leftMargin: Style.space(8)
           anchors.right: eye.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
@@ -675,9 +675,10 @@ Panel {
               topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
+              // Same spec as the stock PanelSectionHeader (audio's OUTPUT et al).
               font.pixelSize: Style.font.caption
-              font.letterSpacing: 1
-              color: Qt.darker(root.foreground, 1.6)
+              font.bold: true
+              color: Qt.darker(root.foreground, 1.4)
             }
 
             Rectangle {
@@ -720,9 +721,10 @@ Panel {
               topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
+              // Same spec as the stock PanelSectionHeader (audio's OUTPUT et al).
               font.pixelSize: Style.font.caption
-              font.letterSpacing: 1
-              color: Qt.darker(root.foreground, 1.6)
+              font.bold: true
+              color: Qt.darker(root.foreground, 1.4)
             }
 
             Rectangle {
@@ -879,9 +881,10 @@ Panel {
               topPadding: 0
               bottomPadding: Style.space(8)
               font.family: root.fontFamily
+              // Same spec as the stock PanelSectionHeader (audio's OUTPUT et al).
               font.pixelSize: Style.font.caption
-              font.letterSpacing: 1
-              color: Qt.darker(root.foreground, 1.6)
+              font.bold: true
+              color: Qt.darker(root.foreground, 1.4)
             }
 
             Rectangle {
