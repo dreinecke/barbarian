@@ -74,6 +74,8 @@ Panel {
   // The background picker (Dave, 2026-09-01): which desk's thumbnail strip is open
   // (-1 = none), and the current theme's background images to offer.
   property int bgPicking: -1
+  property string bgPickingName: ""
+  property string bgPickingPin: ""
   property var bgThemeList: []
   // Solid-colour choices for the picker: black plus the current theme's palette.
   property var bgSolids: []
@@ -279,14 +281,22 @@ Panel {
     wsActProc.running = true
     var m = rowForWs(n); if (m >= 0) lmW.setProperty(m, "name", name)
   }
+  function openBgPicker(n, name, pin) {
+    bgPickingName = name
+    bgPickingPin = pin
+    bgPicking = n
+  }
+
   // Pin desk n's wallpaper (or "default" to unpin). ws-bg-pick moves the pin file and
-  // repaints immediately if n is the desk on screen; the row updates optimistically.
+  // repaints immediately if n is the desk on screen; the row updates optimistically,
+  // and the picker view hands back to the columns.
   function bgPick(n, path) {
     wsActProc.command = ["sh", "-c",
       '"' + pickScript + '" ' + n + " " + JSON.stringify(path)]
     wsActProc.running = true
     var m = rowForWs(n)
     if (m >= 0) lmW.setProperty(m, "bgPin", path === "default" ? "" : path)
+    bgPickingPin = path === "default" ? "" : path
     bgPicking = -1
   }
 
@@ -722,7 +732,6 @@ Panel {
 
         width: dlist.width
         height: Style.space(34)
-          + (root.bgPicking === wrow.model.num ? bgFlow.implicitHeight + Style.space(6) : 0)
 
         Rectangle {
           id: wcard
@@ -778,7 +787,7 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             color: root.foreground
-            onVisibleChanged: if (visible) { text = wrow.model.name; forceActiveFocus(); selectAll() }
+            onVisibleChanged: if (visible && wrow.model) { text = wrow.model.name; forceActiveFocus(); selectAll() }
             onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
             Keys.onEscapePressed: root.wsEditing = -1
           }
@@ -808,7 +817,7 @@ Panel {
             hoverColor: root.accent
             fontFamily: root.fontFamily
             fontSize: Style.font.caption
-            onClicked: root.bgPicking = root.bgPicking === wrow.model.num ? -1 : wrow.model.num
+            onClicked: root.openBgPicker(wrow.model.num, wrow.model.name, wrow.model.bgPin)
           }
 
           PanelActionButton {
@@ -854,114 +863,6 @@ Panel {
           }
         }
 
-        // The picker: Auto (no pin — the blanket/theme chain decides, see
-        // per-workspace-wallpaper.sh) plus the current theme's backgrounds.
-        Flow {
-          id: bgFlow
-          visible: root.bgPicking === wrow.model.num
-          anchors.top: wcard.bottom
-          anchors.topMargin: Style.space(2)
-          width: wrow.width
-          spacing: Style.space(4)
-
-          Rectangle {
-            width: Style.space(56)
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-            border.width: wrow.model.bgPin === "" ? 2 : 1
-            border.color: wrow.model.bgPin === "" ? root.accent
-              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-
-            Text {
-              anchors.centerIn: parent
-              text: "Auto"
-              textFormat: Text.PlainText
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              color: root.muted
-            }
-            MouseArea {
-              anchors.fill: parent
-              onClicked: root.bgPick(wrow.model.num, "default")
-            }
-          }
-
-          // Solid colours: black, then this theme's palette (ws-bg-pick turns the hex
-          // into a flat PNG, since the shell's background only takes image paths).
-          Repeater {
-            model: root.bgSolids
-
-            delegate: Rectangle {
-              required property var modelData
-              readonly property bool current:
-                wrow.model.bgPin.indexOf("/solids/" + modelData.hex.slice(1) + ".png") >= 0
-              width: Style.space(32)
-              height: Style.space(32)
-              radius: Style.cornerRadius
-              color: modelData.hex
-              border.width: current ? 2 : 1
-              border.color: current ? root.accent
-                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-
-              MouseArea {
-                anchors.fill: parent
-                onClicked: root.bgPick(wrow.model.num, "solid:" + modelData.hex)
-              }
-            }
-          }
-
-          Repeater {
-            model: root.bgThemeList
-
-            delegate: Rectangle {
-              required property var modelData
-              width: Style.space(56)
-              height: Style.space(32)
-              radius: Style.cornerRadius
-              color: "transparent"
-              border.width: wrow.model.bgPin === modelData ? 2 : 1
-              border.color: wrow.model.bgPin === modelData ? root.accent
-                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-
-              Image {
-                anchors.fill: parent
-                anchors.margins: 2
-                source: "file://" + modelData
-                sourceSize.width: 160
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-              }
-              MouseArea {
-                anchors.fill: parent
-                onClicked: root.bgPick(wrow.model.num, modelData)
-              }
-            }
-          }
-
-          // Add images to this theme: opens its user background folder in Files.
-          Rectangle {
-            width: Style.space(32)
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-            border.width: 1
-            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-
-            Text {
-              anchors.centerIn: parent
-              text: "+"
-              textFormat: Text.PlainText
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              color: root.muted
-            }
-            MouseArea {
-              anchors.fill: parent
-              onClicked: root.bgAddImages()
-            }
-          }
-        }
       }
     }
   }
@@ -981,18 +882,21 @@ Panel {
       anchors.fill: parent
       // While a desk is being renamed inline, every key belongs to the editor.
       blocked: root.wsEditing >= 0
-      // Escape CANCELS (nothing written); Enter and click-away APPLY.
-      onCloseRequested: root.cancelAndClose()
-      onActivateRequested: root.acceptAndClose()
+      // Escape CANCELS (nothing written); Enter and click-away APPLY. While the
+      // background picker is up, both just hand back to the columns.
+      onCloseRequested: if (root.bgPicking >= 0) root.bgPicking = -1; else root.cancelAndClose()
+      onActivateRequested: if (root.bgPicking >= 0) root.bgPicking = -1; else root.acceptAndClose()
       // x (PanelKeyCatcher's delete key) hides/shows the selected row.
-      onDeleteRequested: root.toggleHidden(root.curLane, root.cursor)
+      onDeleteRequested: if (root.bgPicking < 0) root.toggleHidden(root.curLane, root.cursor)
       // j/k (dy) walk a column, h/l (dx) hop between the two.
       onMoveRequested: function(dx, dy) {
+        if (root.bgPicking >= 0) return
         if (dy !== 0) root.moveCursor(dy)
         if (dx !== 0) root.switchLane(dx)
       }
       // J/K carry the selected row up/down; H/L throw it to the other column.
       onTextKey: function(t) {
+        if (root.bgPicking >= 0) return
         if (t === "J") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
         else if (t === "K") root.moveItem(root.curLane, root.cursor, root.cursor - 1)
         else if (t === "H") root.throwAcross(-1)
@@ -1092,6 +996,7 @@ Panel {
         // click-away applies, Escape forgets.
         Row {
           id: modeRow
+          visible: root.bgPicking < 0
           width: parent.width
           spacing: Style.space(10)
 
@@ -1158,6 +1063,7 @@ Panel {
 
         Row {
           id: laneRow
+          visible: root.bgPicking < 0
           width: parent.width
           spacing: Style.space(14)
 
@@ -1296,7 +1202,169 @@ Panel {
           }
         }
 
+        // The full-panel background picker (Dave, 2026-09-01: "replace the entire
+        // widget area with the selector"): heading with a back affordance, then
+        // double-size tiles — Auto, the theme's colours shaped exactly like the
+        // image tiles, the theme's images, and the + chip. A click pins and hands
+        // straight back to the columns; Escape or the heading goes back untouched.
+        Column {
+          visible: root.bgPicking >= 0
+          width: parent.width
+          spacing: 0
+
+          Item {
+            width: parent.width
+            height: pickHead.implicitHeight
+
+            Text {
+              id: pickBack
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "\u2039 back"
+              textFormat: Text.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              color: root.muted
+              opacity: backArea.containsMouse ? 1 : 0.6
+
+              MouseArea {
+                id: backArea
+                anchors.fill: parent
+                anchors.margins: -Style.space(6)
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.bgPicking = -1
+              }
+            }
+
+            Text {
+              id: pickHead
+              width: parent.width
+              text: "BACKGROUND \u00b7 " + root.bgPickingName.toUpperCase()
+              textFormat: Text.PlainText
+              horizontalAlignment: Text.AlignHCenter
+              elide: Text.ElideMiddle
+              topPadding: 0
+              bottomPadding: Style.space(8)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              color: root.muted
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          }
+
+          Item { width: 1; height: Style.space(10) }
+
+          Flow {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Rectangle {
+              width: Style.space(112)
+              height: Style.space(64)
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+              border.width: root.bgPickingPin === "" ? 2 : 1
+              border.color: root.bgPickingPin === "" ? root.accent
+                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+              Text {
+                anchors.centerIn: parent
+                text: "Auto"
+                textFormat: Text.PlainText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                color: root.muted
+              }
+              MouseArea {
+                anchors.fill: parent
+                onClicked: root.bgPick(root.bgPicking, "default")
+              }
+            }
+
+            Repeater {
+              model: root.bgSolids
+
+              delegate: Rectangle {
+                required property var modelData
+                readonly property bool current:
+                  root.bgPickingPin.indexOf("/solids/" + modelData.hex.slice(1) + ".png") >= 0
+                width: Style.space(112)
+                height: Style.space(64)
+                radius: Style.cornerRadius
+                color: modelData.hex
+                border.width: current ? 2 : 1
+                border.color: current ? root.accent
+                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+                MouseArea {
+                  anchors.fill: parent
+                  onClicked: root.bgPick(root.bgPicking, "solid:" + modelData.hex)
+                }
+              }
+            }
+
+            Repeater {
+              model: root.bgThemeList
+
+              delegate: Rectangle {
+                required property var modelData
+                readonly property bool current: root.bgPickingPin === modelData
+                width: Style.space(112)
+                height: Style.space(64)
+                radius: Style.cornerRadius
+                color: "transparent"
+                border.width: current ? 2 : 1
+                border.color: current ? root.accent
+                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+                Image {
+                  anchors.fill: parent
+                  anchors.margins: 2
+                  source: "file://" + modelData
+                  sourceSize.width: 320
+                  fillMode: Image.PreserveAspectCrop
+                  asynchronous: true
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  onClicked: root.bgPick(root.bgPicking, modelData)
+                }
+              }
+            }
+
+            Rectangle {
+              width: Style.space(112)
+              height: Style.space(64)
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+              Text {
+                anchors.centerIn: parent
+                text: "+"
+                textFormat: Text.PlainText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
+                color: root.muted
+              }
+              MouseArea {
+                anchors.fill: parent
+                onClicked: root.bgAddImages()
+              }
+            }
+          }
+        }
+
         Text {
+          visible: root.bgPicking < 0
           width: parent.width
           // Breathing room above, centred under the three columns (Dave, 2026-09-01).
           topPadding: Style.space(10)
