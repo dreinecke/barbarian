@@ -883,7 +883,9 @@ Panel {
 
           PanelActionButton {
             id: wimg
-            anchors.right: wpencil.left
+            // No rename on this machine, no gap for it: skip the hidden pencil (anchors keep
+            // an invisible item's width — the MacBook showed an empty column, 2026-09-01).
+            anchors.right: root.canRename ? wpencil.left : wsave.left
             anchors.verticalCenter: parent.verticalCenter
             iconText: root.iconImage
             tooltipText: "Background"
