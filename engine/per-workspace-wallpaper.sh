@@ -67,17 +67,26 @@ theme_backgrounds() {
 # `all.<ext>` covers whatever is left; otherwise index into the theme's list, wrapping if the theme
 # ships fewer images than there are workspaces.
 wallpaper_for() {
-  local ws="$1" override
+  local ws="$1" override theme
+  # PINS ARE PER-THEME since 2026-09-01 (Dave: a theme change should bring back the set
+  # you built under that theme, or start everything at Auto): a pin lives in a folder
+  # named after the theme it was picked under, so switching themes switches sets for
+  # free. The theme-set.d/workspace-background hook repaints the desk you are on the
+  # moment the theme changes.
+  theme="$(cat "$STATE/theme.name" 2>/dev/null)"
   # A picture chosen for ONE desk is the most deliberate thing anyone can say here, so it wins.
   # ⚠️ The name must be exactly `ws<N>.<ext>` — `ws2-blue.png` does NOT match `ws2.*`. Two files
   # named that way sat in the folder doing nothing from June until Dave deleted them on 11 Aug.
-  for override in "$HERE/ws$ws".*; do
-    [ -f "$override" ] && { printf '%s' "$override"; return 0; }
-  done
+  if [ -n "$theme" ]; then
+    for override in "$HERE/$theme/ws$ws".*; do
+      [ -f "$override" ] && { printf '%s' "$override"; return 0; }
+    done
+  fi
   # ⚠️ ONE FILE FILLS EVERY REMAINING WORKSPACE, and that is the point. "The rest all the same" is a
   # thing David asks for as a mood rather than a setting, so it has to be one file to add and one
   # file to delete — not an edit here, which would be a change he cannot make or undo himself.
-  for override in "$HERE"/all.*; do
+  # A theme-scoped blanket beats the universal one.
+  for override in "$HERE/$theme"/all.* "$HERE"/all.*; do
     [ -f "$override" ] && { printf '%s' "$override"; return 0; }
   done
 

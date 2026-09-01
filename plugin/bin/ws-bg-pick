@@ -18,7 +18,12 @@ case "$N" in ''|*[!0-9]*) echo "ws-bg-pick: '$N' is not a workspace number" >&2;
 
 DIR="$HOME/.config/omarchy/workspace-backgrounds"
 WATCHER="$DIR/per-workspace-wallpaper.sh"
-mkdir -p "$DIR"
+# Pins are per-theme (2026-09-01): each theme keeps its own set, so changing theme
+# brings back what was picked under it — or all-Auto if nothing ever was.
+THEME="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme.name" 2>/dev/null)"
+[ -n "$THEME" ] || { echo "ws-bg-pick: no current theme name" >&2; exit 1; }
+PINDIR="$DIR/$THEME"
+mkdir -p "$PINDIR"
 
 # A solid colour is an image too: `solid:#rrggbb` caches a tiny flat PNG under solids/
 # (the shell's background plugin only takes image paths) and pins that. The hexes on
@@ -38,12 +43,12 @@ if [[ "$CHOICE" == solid:* ]]; then
   CHOICE="$f"
 fi
 
-rm -f "$DIR/ws$N".*
+rm -f "$PINDIR/ws$N".*
 if [ "$CHOICE" != "default" ]; then
   SRC="$(realpath "$CHOICE")"
   [ -f "$SRC" ] || { echo "ws-bg-pick: no such image: $SRC" >&2; exit 1; }
   ext="${SRC##*.}"
-  ln -sf "$SRC" "$DIR/ws$N.$ext"
+  ln -sf "$SRC" "$PINDIR/ws$N.$ext"
 fi
 
 active="$(hyprctl activeworkspace -j 2>/dev/null | grep -oP '"id":\s*\K[0-9]+' | head -1 || true)"
