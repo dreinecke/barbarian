@@ -376,7 +376,7 @@ Panel {
       bgThemeList = bgs
       // Black first, then the theme's own colours, deduped (last-horizon's blue IS its
       // accent) — these become the solid swatches.
-      var sol = [{ name: "black", hex: "#000000" }]
+      var sol = [{ name: "Black", hex: "#000000" }]
       var seen = { "#000000": true }
       var ckeys = ["background", "accent", "muted", "red", "yellow", "green", "cyan", "blue", "magenta"]
       var cl = String(tail4b[1].split("---PINS---")[0] || "").split("\n")
@@ -386,7 +386,8 @@ Panel {
         var hx = cm[2].toLowerCase()
         if (seen[hx]) continue
         seen[hx] = true
-        sol.push({ name: cm[1], hex: hx })
+        sol.push({ name: cm[1] === "red" ? "Urgent"
+                     : cm[1].charAt(0).toUpperCase() + cm[1].slice(1), hex: hx })
       }
       bgSolids = sol
       var pins = {}
@@ -1262,12 +1263,17 @@ Panel {
           Item { width: 1; height: Style.space(10) }
 
           Flow {
+            id: pickFlow
             width: parent.width
             spacing: Style.space(8)
 
+            // Four tiles to a row, whatever the panel width (Dave, 2026-09-01).
+            readonly property real tileW: (width - spacing * 3) / 4
+            readonly property real tileH: Math.round(tileW * 0.56)
+
             Rectangle {
-              width: Style.space(112)
-              height: Style.space(64)
+              width: pickFlow.tileW
+              height: pickFlow.tileH
               radius: Style.cornerRadius
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
               border.width: root.bgPickingPin === "" ? 2 : 1
@@ -1295,13 +1301,27 @@ Panel {
                 required property var modelData
                 readonly property bool current:
                   root.bgPickingPin.indexOf("/solids/" + modelData.hex.slice(1) + ".png") >= 0
-                width: Style.space(112)
-                height: Style.space(64)
+                readonly property color tileColor: modelData.hex
+                width: pickFlow.tileW
+                height: pickFlow.tileH
                 radius: Style.cornerRadius
-                color: modelData.hex
+                color: tileColor
                 border.width: current ? 2 : 1
                 border.color: current ? root.accent
                   : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+                Text {
+                  anchors.centerIn: parent
+                  text: modelData.name
+                  textFormat: Text.PlainText
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  // Ink picked against THIS tile's colour, not the theme's.
+                  color: (parent.tileColor.r * 0.299 + parent.tileColor.g * 0.587
+                          + parent.tileColor.b * 0.114) > 0.55 ? "#1a1a1a" : "#e8e8e8"
+                  opacity: 0.9
+                }
 
                 MouseArea {
                   anchors.fill: parent
@@ -1316,8 +1336,8 @@ Panel {
               delegate: Rectangle {
                 required property var modelData
                 readonly property bool current: root.bgPickingPin === modelData
-                width: Style.space(112)
-                height: Style.space(64)
+                width: pickFlow.tileW
+                height: pickFlow.tileH
                 radius: Style.cornerRadius
                 color: "transparent"
                 border.width: current ? 2 : 1
@@ -1340,8 +1360,8 @@ Panel {
             }
 
             Rectangle {
-              width: Style.space(112)
-              height: Style.space(64)
+              width: pickFlow.tileW
+              height: pickFlow.tileH
               radius: Style.cornerRadius
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
               border.width: 1
