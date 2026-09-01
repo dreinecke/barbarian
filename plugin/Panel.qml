@@ -39,6 +39,7 @@ Panel {
   readonly property color accent: Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  readonly property string iconHero: "󰞇"
   readonly property string iconGrip: ""
   readonly property string iconCheck: ""
   readonly property string iconX: ""
@@ -58,6 +59,29 @@ Panel {
   // MacBook names come from the sync, so the pencil is not offered there).
   property int wsEditing: -1
   property bool canRename: false
+
+  // The hero's subtitle: one bar pun per opening, cycling through the lot (Dave,
+  // 2026-09-01: "as many bar related sayings and plays on words as we can find").
+  // Starts somewhere random so a shell restart does not reset the tour to the top.
+  readonly property var mottos: [
+    "No holds barred", "Barbarians at the gate", "Barred from entering",
+    "Hanna-Barbera", "Bar-ram-ewe", "Bar bar black sheep", "Obarma care",
+    "Raising the bar", "Bar none", "Behind bars", "Passed the bar exam",
+    "Called to the bar", "Belly up to the bar", "Open bar", "Minibar",
+    "Salad bar", "Space bar", "Crowbar", "Isobar", "Sandbar", "Rebar",
+    "Handlebar moustache", "Chocolate bar", "Bar mitzvah",
+    "Barbershop quartet", "Top of the bar charts", "Barometer rising",
+    "Wheelbarrow", "Barcelona", "Barbados", "Barracuda", "Bar humbug",
+    "Milky Bar Kid", "A low bar, cleared", "Bar fight club", "Embargo lifted",
+    "Conan the librarian",
+    // The next batch is harvested from Dave's own Gemini pun hunt (2026-09-01).
+    "Bar-t Simpson", "Boba Bar-fett", "Bar-ad-d\u00fbr", "Bar-bie World",
+    "Babar the Elephant", "Bar-ack Obama", "Bar-uch Spinoza", "Bar-barossa",
+    "Bar-bra Streisand", "Bar-carole", "Granola bar", "Bar-becue",
+    "Bar-ley legal", "A-bar-cadabra", "Foo-bar", "Bar-itone", "Side-bar",
+    "Bar-gain", "Bar Harbor"
+  ]
+  property int motto: Math.floor(Math.random() * 9973)
 
   // Nothing on the bar: the panel is the whole widget.
   implicitWidth: 0
@@ -317,6 +341,7 @@ Panel {
     if (opened) {
       dirty = false
       cancelled = false
+      motto++
       readProc.command = ["sh", "-c",
         "cat \"$HOME/.config/omarchy/shell.json\"; echo ---BARHIDDEN---; cat \"$HOME/.config/omarchy/bar-hidden.json\" 2>/dev/null || echo '{}'; " +
         "echo ---WS---; hyprctl workspaces -j 2>/dev/null; echo ---ACTIVE---; hyprctl activeworkspace -j 2>/dev/null; " +
@@ -535,21 +560,55 @@ Panel {
         anchors.fill: parent
         spacing: Style.space(6)
 
+        // The hero: icon, title, a bar pun — the same heading layout as the stock
+        // panels (Dave, 2026-09-01, holding up Display / SUN BLAST as the model),
+        // with the apply/cancel buttons riding its trailing edge.
         Item {
           width: parent.width
-          height: Math.max(headText.implicitHeight, applyButton.height)
+          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, headerActions.height)
 
-          PanelSectionHeader {
-            id: headText
+          Text {
+            id: heroIcon
+            text: root.iconHero
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.display
             anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Column {
+            id: heroLabels
+            anchors.left: heroIcon.right
+            anchors.leftMargin: Style.space(14)
             anchors.right: headerActions.left
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
-            text: "Barbarian"
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+            spacing: Style.space(2)
+
+            Text {
+              text: "Barbarian"
+              textFormat: Text.PlainText
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
+              width: parent.width
+            }
+
+            Text {
+              text: root.mottos[root.motto % root.mottos.length].toUpperCase()
+              textFormat: Text.PlainText
+              color: Qt.darker(root.foreground, 1.4)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+              width: parent.width
+            }
           }
 
           Row {
@@ -559,7 +618,6 @@ Panel {
             spacing: Style.space(2)
 
             PanelActionButton {
-              id: applyButton
               iconText: root.iconCheck
               tooltipText: "Apply"
               foreground: root.foreground
@@ -580,6 +638,10 @@ Panel {
             }
           }
         }
+
+        // Hero to separator: space(8) on top of the column's space(6) makes the
+        // stock panels' space(14) gap.
+        Item { width: 1; height: Style.space(8) }
 
         PanelSeparator { width: parent.width }
 
