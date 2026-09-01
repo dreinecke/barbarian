@@ -29,7 +29,13 @@ if not sys.argv[1:]:
 
 want = []  # (lane, id, hidden)
 ws_id = ws_place = None
+del_spacers = 0
 for arg in sys.argv[1:]:
+    if arg == "DEL:omarchy.spacer":
+        # Spacer deletion, the mirror of minting — the panel sends one per removed
+        # spacer, and the count is settled against the unnamed pool after ordering.
+        del_spacers += 1
+        continue
     if arg.startswith("WS:"):
         _, ws_id, ws_place = arg.split(":")
         if ws_place not in ("left", "center", "right"):
@@ -111,16 +117,26 @@ for lane, wid, hid in want:
 # half was missing until 2026-09-01, and a caller that did not know about the sidecar
 # (the pre-hide panel, still rendering out of a stale shell) silently destroyed the
 # hidden Bluetooth entry through it.
+# Deleted spacers: consume unnamed spacer entries from the pool so the leftover
+# pass below drops them instead of preserving them.
+deleted = []
+sp_pool = pools.get("omarchy.spacer") or []
+for _ in range(del_spacers):
+    if sp_pool:
+        deleted.append(sp_pool.pop(0))
+
 named = [e for ln in LANES for e in ordered[ln]] \
       + [r["entry"] for ln in LANES for r in parked[ln]]
 for ln in LANES:
-    leftovers = [e for e in sections[ln] if not any(e is o for o in named)]
+    leftovers = [e for e in sections[ln]
+                 if not any(e is o for o in named) and not any(e is d for d in deleted)]
     lane_rows = ordered[ln] + leftovers
     if ws_id and ws_place == KEYS[ln]:
         lane_rows = [ws_entry] + lane_rows
     layout[KEYS[ln]] = lane_rows
     for row in parked_in[ln]:
-        if not any(row["entry"] is o for o in named):
+        if not any(row["entry"] is o for o in named) \
+           and not any(row["entry"] is d for d in deleted):
             parked[ln].append({"index": row.get("index", 0), "entry": row["entry"]})
 
 def write(p, obj):

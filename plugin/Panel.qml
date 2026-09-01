@@ -77,6 +77,9 @@ Panel {
   property string bgPickingName: ""
   property string bgPickingPin: ""
   property var bgThemeList: []
+  // How many spacers were deleted this session — the apply script drops that many
+  // unnamed spacer entries (the only widget it may delete, mirroring the minting).
+  property int spacerDeletes: 0
   // Solid-colour choices for the picker: black plus the current theme's palette.
   property var bgSolids: []
 
@@ -218,6 +221,17 @@ Panel {
   function addSpacer(lane) {
     modelFor(lane).append({ wid: "omarchy.spacer", label: prettyName("omarchy.spacer"),
                             glyph: iconFor("omarchy.spacer"), hid: false, lit: true })
+    dirty = true
+  }
+
+  // The x on a spacer row (Dave, 2026-09-01): spacers are removable outright, not
+  // just parkable — a deleted one is minted back with one click on "+ spacer".
+  function removeSpacer(lane, i) {
+    var m = modelFor(lane)
+    if (i < 0 || i >= m.count || m.get(i).wid !== "omarchy.spacer") return
+    m.remove(i)
+    spacerDeletes++
+    if (curLane === lane) cursor = Math.max(0, Math.min(m.count - 1, cursor))
     dirty = true
   }
 
@@ -378,7 +392,9 @@ Panel {
       // accent) — these become the solid swatches.
       var sol = [{ name: "Black", hex: "#000000" }]
       var seen = { "#000000": true }
-      var ckeys = ["background", "accent", "muted", "red", "yellow", "green", "cyan", "blue", "magenta"]
+      // No red/cyan/magenta — "those tend to look terrible for this kind of
+      // purpose" (Dave, 2026-09-01).
+      var ckeys = ["background", "accent", "muted", "yellow", "green", "blue"]
       var cl = String(tail4b[1].split("---PINS---")[0] || "").split("\n")
       for (var ci = 0; ci < cl.length; ci++) {
         var cm = cl[ci].match(/^\s*([A-Za-z_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
@@ -386,8 +402,7 @@ Panel {
         var hx = cm[2].toLowerCase()
         if (seen[hx]) continue
         seen[hx] = true
-        sol.push({ name: cm[1] === "red" ? "Urgent"
-                     : cm[1].charAt(0).toUpperCase() + cm[1].slice(1), hex: hx })
+        sol.push({ name: cm[1].charAt(0).toUpperCase() + cm[1].slice(1), hex: hx })
       }
       bgSolids = sol
       var pins = {}
@@ -402,6 +417,7 @@ Panel {
     }
     wsEditing = -1
     bgPicking = -1
+    spacerDeletes = 0
     var lanes = laneOrder()
     curLane = lanes[0]
     for (var li = 0; li < lanes.length; li++)
@@ -482,6 +498,7 @@ Panel {
     if (wsWidgetId !== "")
       argv.push("WS:" + wsWidgetId + ":"
         + (mode === "1" ? "left" : mode === "2" ? "center" : "right"))
+    for (i = 0; i < spacerDeletes; i++) argv.push("DEL:omarchy.spacer")
     applyProc.command = argv
     applyProc.running = true
   }
@@ -616,7 +633,7 @@ Panel {
         Text {
           anchors.left: glyphSlot.right
           anchors.leftMargin: Style.space(8)
-          anchors.right: eye.left
+          anchors.right: spacerX.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
           text: wrap.model.label
@@ -627,6 +644,23 @@ Panel {
           font.strikeout: wrap.model.hid        // crossed = our setting says hide
           color: root.foreground
           opacity: wrap.model.lit ? 1 : 0.25    // faded = drawing nothing right now
+        }
+
+        // Spacers only: an x that deletes the row outright (hide would just park it).
+        // Clicked through the drag area's hit test, like the eye.
+        Text {
+          id: spacerX
+          visible: wrap.model.wid === "omarchy.spacer"
+          width: visible ? implicitWidth : 0
+          anchors.right: eye.left
+          anchors.rightMargin: visible ? Style.space(10) : 0
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.iconX
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          color: root.foreground
+          opacity: 0.55
         }
 
         // Eye = shown, slashed eye = parked off the bar. Clicked through the drag
@@ -657,8 +691,16 @@ Panel {
         onClicked: function(mouse) {
           var p = dragArea.mapToItem(eye, mouse.x, mouse.y)
           if (p.x > -Style.space(6) && p.x < eye.width + Style.space(6)
-              && p.y > -Style.space(8) && p.y < eye.height + Style.space(8))
+              && p.y > -Style.space(8) && p.y < eye.height + Style.space(8)) {
             root.toggleHidden(list.lane, wrap.index)
+            return
+          }
+          if (spacerX.visible) {
+            var q = dragArea.mapToItem(spacerX, mouse.x, mouse.y)
+            if (q.x > -Style.space(6) && q.x < spacerX.width + Style.space(6)
+                && q.y > -Style.space(8) && q.y < spacerX.height + Style.space(8))
+              root.removeSpacer(list.lane, wrap.index)
+          }
         }
         onPositionChanged: {
           if (!drag.active) return
@@ -690,22 +732,55 @@ Panel {
     }
   }
 
-  // The faint "+ spacer" chip at the foot of an icon lane.
+  // "+ spacer" at the foot of a lane: drawn exactly like a spacer row in the list —
+  // same card, same label position — with a + in the glyph slot and no eye or grip
+  // (Dave, 2026-09-01). Clicking stages a new spacer above it.
   component AddSpacer: Item {
     property string lane: "R"
     width: parent.width
-    height: addText.implicitHeight + Style.space(6)
+    height: Style.space(34)
 
-    Text {
-      id: addText
-      anchors.centerIn: parent
-      text: "+ spacer"
-      textFormat: Text.PlainText
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      color: root.muted
-      opacity: addArea.containsMouse ? 1 : 0.55
+    Rectangle {
+      width: parent.width
+      height: Style.space(30)
+      y: Style.space(2)
+      radius: Style.cornerRadius
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                     addArea.containsMouse ? 0.10 : 0.04)
+
+      Item {
+        id: addGlyphSlot
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(22)
+        height: addPlus.implicitHeight
+
+        Text {
+          id: addPlus
+          anchors.centerIn: parent
+          text: "+"
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          color: root.foreground
+          opacity: addArea.containsMouse ? 0.85 : 0.4
+        }
+      }
+
+      Text {
+        anchors.left: addGlyphSlot.right
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Spacer"
+        textFormat: Text.PlainText
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        color: root.foreground
+        opacity: addArea.containsMouse ? 0.9 : 0.45
+      }
     }
+
     MouseArea {
       id: addArea
       anchors.fill: parent
