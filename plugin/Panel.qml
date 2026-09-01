@@ -37,6 +37,7 @@ Panel {
 
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color accent: Color.accent
+  readonly property color muted: Color.muted
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property string iconHero: "󰞇"
@@ -449,9 +450,10 @@ Panel {
             textFormat: Text.PlainText
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
-            // Accent at 75%, dimming to 25% — Dave's picks from the mock editor (2026-09-01).
-            color: root.accent
-            opacity: wrap.model.lit ? 0.75 : 0.25
+            // Dave's second mock-editor pass (2026-09-01): foreground at 55%, dim 25%;
+            // headings and helper wear muted, the rules accent at 18%.
+            color: root.foreground
+            opacity: wrap.model.lit ? 0.55 : 0.25
           }
         }
 
@@ -651,7 +653,7 @@ Panel {
         // stock panels' space(14) gap.
         Item { width: 1; height: Style.space(8) }
 
-        PanelSeparator { width: parent.width }
+        PanelSeparator { width: parent.width; foreground: root.accent; strength: 0.18 }
 
         Item {
           width: parent.width
@@ -696,13 +698,13 @@ Panel {
               // Same spec as the stock PanelSectionHeader (audio's OUTPUT et al).
               font.pixelSize: Style.font.caption
               font.bold: true
-              color: Qt.darker(root.foreground, 1.4)
+              color: root.muted
             }
 
             Rectangle {
               width: parent.width
               height: 1
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
             }
 
             Item { width: 1; height: Style.space(4) }
@@ -718,7 +720,7 @@ Panel {
           Rectangle {
             width: 1
             height: Math.max(colL.height, Math.max(colW.height, colR.height))
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
           }
 
           // The desks, in the middle — where they sit on the bar (Dave, 2026-09-01 🎊).
@@ -742,13 +744,13 @@ Panel {
               // Same spec as the stock PanelSectionHeader (audio's OUTPUT et al).
               font.pixelSize: Style.font.caption
               font.bold: true
-              color: Qt.darker(root.foreground, 1.4)
+              color: root.muted
             }
 
             Rectangle {
               width: parent.width
               height: 1
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
             }
 
             Item { width: 1; height: Style.space(4) }
@@ -880,7 +882,7 @@ Panel {
           Rectangle {
             width: 1
             height: Math.max(colL.height, Math.max(colW.height, colR.height))
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
           }
 
           Column {
@@ -902,13 +904,13 @@ Panel {
               // Same spec as the stock PanelSectionHeader (audio's OUTPUT et al).
               font.pixelSize: Style.font.caption
               font.bold: true
-              color: Qt.darker(root.foreground, 1.4)
+              color: root.muted
             }
 
             Rectangle {
               width: parent.width
               height: 1
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
             }
 
             Item { width: 1; height: Style.space(4) }
@@ -931,8 +933,7 @@ Panel {
           elide: Text.ElideRight
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          color: root.accent
-          opacity: 0.66
+          color: root.muted
         }
       }
     }
