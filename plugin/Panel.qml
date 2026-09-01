@@ -850,6 +850,9 @@ Panel {
 
         Text {
           width: parent.width
+          // Breathing room above, centred under the three columns (Dave, 2026-09-01).
+          topPadding: Style.space(10)
+          horizontalAlignment: Text.AlignHCenter
           text: "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
           textFormat: Text.PlainText
           elide: Text.ElideRight
