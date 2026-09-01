@@ -734,70 +734,6 @@ Panel {
     }
   }
 
-  // A mode chip drawing the arrangement it applies (Dave, 2026-09-01: "more visual
-  // representation than text written out"): three words seated where the bar sections
-  // sit, the Workspaces word lit, the icon lanes muted.
-  component ModeChip: Rectangle {
-    property string m: "1"
-    property int wsAt: 0
-    readonly property bool sel: root.mode === m
-
-    height: Style.space(32)
-    radius: Style.cornerRadius
-    color: sel ? Style.selectedFillFor(root.foreground, root.accent) : "transparent"
-    border.width: 1
-    border.color: sel ? Style.selectedBorderFor(root.foreground, root.accent)
-      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
-                chipArea.containsMouse ? 0.5 : 0.25)
-
-    Text {
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(12)
-      anchors.verticalCenter: parent.verticalCenter
-      text: parent.wsAt === 0 ? "Workspaces" : "Icons"
-      textFormat: Text.PlainText
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: parent.wsAt === 0
-      color: parent.wsAt === 0
-        ? (parent.sel ? Style.selectedStateColor(root.foreground, root.accent) : root.foreground)
-        : root.muted
-    }
-    Text {
-      anchors.horizontalCenter: parent.horizontalCenter
-      anchors.verticalCenter: parent.verticalCenter
-      text: parent.wsAt === 1 ? "Workspaces" : "Icons"
-      textFormat: Text.PlainText
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: parent.wsAt === 1
-      color: parent.wsAt === 1
-        ? (parent.sel ? Style.selectedStateColor(root.foreground, root.accent) : root.foreground)
-        : root.muted
-    }
-    Text {
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(12)
-      anchors.verticalCenter: parent.verticalCenter
-      text: parent.wsAt === 2 ? "Workspaces" : "Icons"
-      textFormat: Text.PlainText
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: parent.wsAt === 2
-      color: parent.wsAt === 2
-        ? (parent.sel ? Style.selectedStateColor(root.foreground, root.accent) : root.foreground)
-        : root.muted
-    }
-
-    MouseArea {
-      id: chipArea
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: root.setMode(parent.m)
-    }
-  }
-
   // "+ spacer" at the foot of a lane: drawn exactly like a spacer row in the list —
   // same card, same label position — with a + in the glyph slot and no eye or grip
   // (Dave, 2026-09-01). Clicking stages a new spacer above it.
@@ -1144,9 +1080,42 @@ Panel {
 
           readonly property real chipWidth: (width - spacing * 2) / 3
 
-          ModeChip { width: modeRow.chipWidth; m: "1"; wsAt: 0 }
-          ModeChip { width: modeRow.chipWidth; m: "2"; wsAt: 1 }
-          ModeChip { width: modeRow.chipWidth; m: "3"; wsAt: 2 }
+          Button {
+            width: modeRow.chipWidth
+            text: "Workspaces left"
+            bordered: true
+            selected: root.mode === "1"
+            foreground: root.foreground
+            background: bar ? bar.background : Color.background
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.setMode("1")
+          }
+          Button {
+            width: modeRow.chipWidth
+            text: "Workspaces centre"
+            bordered: true
+            selected: root.mode === "2"
+            foreground: root.foreground
+            background: bar ? bar.background : Color.background
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.setMode("2")
+          }
+          Button {
+            width: modeRow.chipWidth
+            text: "Workspaces right"
+            bordered: true
+            selected: root.mode === "3"
+            foreground: root.foreground
+            background: bar ? bar.background : Color.background
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.setMode("3")
+          }
         }
 
         Item { width: 1; height: Style.space(8) }
