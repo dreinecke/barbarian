@@ -422,20 +422,29 @@ Panel {
           color: Qt.darker(root.foreground, 1.8)
         }
 
-        Text {
+        // An Item centring a Text, not AlignHCenter: the icons' advance widths vary
+        // (the Bluetooth rune is half the robot's width), and text alignment left the
+        // narrow ones visibly off-centre in the slot (Dave, 2026-09-01). centerIn
+        // centres the glyph's actual box, whatever its width.
+        Item {
           id: glyphSlot
           anchors.left: parent.left
           anchors.leftMargin: Style.space(8)
           anchors.verticalCenter: parent.verticalCenter
           width: Style.space(22)
-          horizontalAlignment: Text.AlignHCenter
-          text: wrap.model.glyph
-          textFormat: Text.PlainText
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          // Accent at 75%, dimming to 25% — Dave's picks from the mock editor (2026-09-01).
-          color: root.accent
-          opacity: wrap.model.lit ? 0.75 : 0.25
+          height: glyphText.implicitHeight
+
+          Text {
+            id: glyphText
+            anchors.centerIn: parent
+            text: wrap.model.glyph
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            // Accent at 75%, dimming to 25% — Dave's picks from the mock editor (2026-09-01).
+            color: root.accent
+            opacity: wrap.model.lit ? 0.75 : 0.25
+          }
         }
 
         Text {
