@@ -210,6 +210,15 @@ Panel {
     if (lanes.indexOf(curLane) < 0) { curLane = lanes[0]; cursor = 0 }
     dirty = true
   }
+  // "+ spacer" (Dave, 2026-09-01): append a new spacer row to a lane, staged like any
+  // other change. Spacers are the one widget with fungible instances, so the apply
+  // script mints one when the bar has fewer than the panel asks for.
+  function addSpacer(lane) {
+    modelFor(lane).append({ wid: "omarchy.spacer", label: prettyName("omarchy.spacer"),
+                            glyph: iconFor("omarchy.spacer"), hid: false, lit: true })
+    dirty = true
+  }
+
   function drainLane(from, into) {
     var at = 0
     while (from.count > 0) {
@@ -667,6 +676,31 @@ Panel {
         }
         onCanceled: { card.x = 0; card.y = Style.space(2) }
       }
+    }
+  }
+
+  // The faint "+ spacer" chip at the foot of an icon lane.
+  component AddSpacer: Item {
+    property string lane: "R"
+    width: parent.width
+    height: addText.implicitHeight + Style.space(6)
+
+    Text {
+      id: addText
+      anchors.centerIn: parent
+      text: "+ spacer"
+      textFormat: Text.PlainText
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      color: root.muted
+      opacity: addArea.containsMouse ? 1 : 0.55
+    }
+    MouseArea {
+      id: addArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.addSpacer(parent.lane)
     }
   }
 
@@ -1158,6 +1192,8 @@ Panel {
               visible: root.mode !== "1"
             }
 
+            AddSpacer { lane: "L"; visible: root.mode !== "1" }
+
             DeskList { width: parent.width; visible: root.mode === "1" }
           }
 
@@ -1202,6 +1238,8 @@ Panel {
               visible: root.mode !== "2"
             }
 
+            AddSpacer { lane: "C"; visible: root.mode !== "2" }
+
             DeskList { width: parent.width; visible: root.mode === "2" }
           }
 
@@ -1245,6 +1283,8 @@ Panel {
               others: [lviewL, lviewC]
               visible: root.mode !== "3"
             }
+
+            AddSpacer { lane: "R"; visible: root.mode !== "3" }
 
             DeskList { width: parent.width; visible: root.mode === "3" }
           }

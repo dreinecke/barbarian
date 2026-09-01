@@ -92,9 +92,14 @@ parked = {ln: [] for ln in LANES}
 pos = {ln: 0 for ln in LANES}
 for lane, wid, hid in want:
     pool = pools.get(wid)
-    if not pool:
+    if pool:
+        entry = pool.pop(0)
+    elif wid == "omarchy.spacer":
+        # Spacer instances are fungible, and Barbarian's "+ spacer" chip stages new
+        # ones — the only widget this script will mint rather than refuse.
+        entry = {"id": wid}
+    else:
         sys.exit(f"bar-arrange-apply: '{wid}' is not in the bar or hidden list (or named twice)")
-    entry = pool.pop(0)
     if hid:
         parked[lane].append({"index": pos[lane], "entry": entry})
     else:
