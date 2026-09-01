@@ -821,7 +821,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     iconText: root.iconPencil
                     tooltipText: "Rename"
-                    foreground: root.foreground
+                    foreground: Qt.darker(root.foreground, 1.8)
                     hoverColor: root.accent
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
@@ -834,7 +834,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     iconText: root.iconSave
                     tooltipText: "Save layout (HYPER+S)"
-                    foreground: root.foreground
+                    foreground: Qt.darker(root.foreground, 1.8)
                     hoverColor: root.accent
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
@@ -848,7 +848,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     iconText: root.iconRestore
                     tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
-                    foreground: root.foreground
+                    foreground: Qt.darker(root.foreground, 1.8)
                     hoverColor: root.accent
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
