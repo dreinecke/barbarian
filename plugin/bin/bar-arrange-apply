@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bar-arrange-apply <L|C|R>:<widget-id>[:hidden]... [WS:<id>:<left|center|hidden>]
+# bar-arrange-apply <L|C|R>:<widget-id>[:hidden]... [WS:<id>:<left|center|right>]
 # Rewrite the LEFT, CENTER and RIGHT sections of ~/.config/omarchy/shell.json to the
 # given order, park ids marked :hidden in ~/.config/omarchy/bar-hidden.json, and place
 # the workspaces strip per the WS directive. Two lanes since 2026-09-01 (Dave asked for
@@ -7,7 +7,7 @@
 # 99% of the time but occasionally I want" — a hidden entry is MOVED to the sidecar with
 # its whole settings object, its lane and its position, never deleted); the CENTER lane
 # and the WS directive since the same evening (Barbarian's mode toggle: the strip goes
-# far left, centre, or off the bar entirely — parked in the sidecar like any hidden row).
+# far left, centre, or far right — "off" was briefly a mode and turned out to be a typo).
 #
 # Entries travel as whole objects, so per-widget settings (the clock's formats, the
 # strip's own config) survive a reorder, a lane change and a hide/show round-trip. Ids
@@ -32,7 +32,7 @@ ws_id = ws_place = None
 for arg in sys.argv[1:]:
     if arg.startswith("WS:"):
         _, ws_id, ws_place = arg.split(":")
-        if ws_place not in ("left", "center", "hidden"):
+        if ws_place not in ("left", "center", "right"):
             sys.exit(f"bar-arrange-apply: bad WS placement '{ws_place}'")
         continue
     parts = arg.split(":")
@@ -117,8 +117,6 @@ for ln in LANES:
     for row in parked_in[ln]:
         if not any(row["entry"] is o for o in named):
             parked[ln].append({"index": row.get("index", 0), "entry": row["entry"]})
-if ws_id and ws_place == "hidden":
-    parked["C"].insert(0, {"index": 0, "entry": ws_entry})
 
 def write(p, obj):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix="." + os.path.basename(p) + ".")

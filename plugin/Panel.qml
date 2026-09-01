@@ -63,10 +63,10 @@ Panel {
   // MacBook names come from the sync, so the pencil is not offered there).
   property int wsEditing: -1
   property bool canRename: false
-  // Where the workspaces strip sits on the bar — Barbarian's MODE (Dave, 2026-09-01):
-  // "1" strip far left, icons centre + right · "2" icons left, strip centre (stock) ·
-  // "3" icons in all three sections, the strip parked off the bar. Derived from
-  // shell.json on every open and applied, like everything else, on close.
+  // Where the workspaces strip sits on the bar — Barbarian's MODE (Dave, 2026-09-01;
+  // the third option was a typo for "right", not "off"): "1" strip far left, icons
+  // centre + right · "2" icons left, strip centre (stock) · "3" icons left + centre,
+  // strip far right. Derived from shell.json on every open and applied on close.
   property string mode: "2"
   // The strip's widget id as found in the layout (tinkerbell.workspaces here,
   // omarchy.workspaces stock) — the apply script moves it whole between sections.
@@ -195,7 +195,7 @@ Panel {
 
   // The icon lanes visible in the current mode, left to right on screen.
   function laneOrder() {
-    return mode === "1" ? ["C", "R"] : mode === "2" ? ["L", "R"] : ["L", "C", "R"]
+    return mode === "1" ? ["C", "R"] : mode === "2" ? ["L", "R"] : ["L", "C"]
   }
 
   // Switching mode moves the strip; the icon lane that loses its column empties into
@@ -204,6 +204,7 @@ Panel {
     if (m === mode) return
     if (m === "1") drainLane(lmL, lmC)
     else if (m === "2") drainLane(lmC, lmL)
+    else if (m === "3") drainLane(lmR, lmC)
     mode = m
     var lanes = laneOrder()
     if (lanes.indexOf(curLane) < 0) { curLane = lanes[0]; cursor = 0 }
@@ -337,9 +338,9 @@ Panel {
       var inL = findWs(secL), inC = findWs(secC), inR = findWs(secR)
       wsWidgetId = inL || inC || inR
         || findWs(ents(pkL).concat(ents(pkC)).concat(ents(pkR)))
-      // A strip in the right section has no mode of its own — treated as centre, and
-      // the next apply moves it there.
-      mode = inL ? "1" : (inC || inR) ? "2" : "3"
+      // A strip parked in the sidecar (the retired "off" mode) or missing entirely is
+      // treated as centre — the next apply brings it back there.
+      mode = inL ? "1" : inR ? "3" : "2"
       fillLane(lmL, secL, pkL)
       fillLane(lmC, secC, pkC)
       fillLane(lmR, secR, pkR)
@@ -460,7 +461,7 @@ Panel {
     }
     if (wsWidgetId !== "")
       argv.push("WS:" + wsWidgetId + ":"
-        + (mode === "1" ? "left" : mode === "2" ? "center" : "hidden"))
+        + (mode === "1" ? "left" : mode === "2" ? "center" : "right"))
     applyProc.command = argv
     applyProc.running = true
   }
@@ -1082,7 +1083,7 @@ Panel {
           }
           Button {
             width: modeRow.chipWidth
-            text: "Workspaces off"
+            text: "Workspaces right"
             bordered: true
             selected: root.mode === "3"
             foreground: root.foreground
@@ -1210,7 +1211,7 @@ Panel {
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
           }
 
-          // Slot three: always the bar's right icons.
+          // Slot three: the strip in mode 3, otherwise the bar's right icons.
           Column {
             id: col2
             width: laneRow.colWidth
@@ -1218,7 +1219,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "RIGHT"
+              text: root.mode === "3" ? "WORKSPACES" : "RIGHT"
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
               topPadding: 0
@@ -1242,7 +1243,10 @@ Panel {
               id: lviewR
               lane: "R"
               others: [lviewL, lviewC]
+              visible: root.mode !== "3"
             }
+
+            DeskList { width: parent.width; visible: root.mode === "3" }
           }
         }
 
