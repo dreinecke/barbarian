@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# bar-arrange-apply <widget-id>[:hidden]... — rewrite the RIGHT section of
+# bar-arrange-apply <L|R>:<widget-id>[:hidden]... — rewrite the LEFT and RIGHT sections of
 # ~/.config/omarchy/shell.json to the given order, and park ids marked :hidden in
-# ~/.config/omarchy/bar-hidden.json (Dave, 2026-09-01: "things like the Bluetooth one
-# which is noise/clutter 99% of the time but occasionally I want" — hiding must be
-# reversible from the same panel, so a hidden entry is MOVED to the sidecar with its
-# whole settings object and its list position, never deleted).
+# ~/.config/omarchy/bar-hidden.json. Two lanes since 2026-09-01 (Dave asked for icons on
+# the far left); hiding since the same day (Dave: Bluetooth is "noise/clutter 99% of the
+# time but occasionally I want" — so a hidden entry is MOVED to the sidecar with its whole
+# settings object, its lane and its position, never deleted).
 #
-# Entries travel as whole objects, so per-widget settings (the clock's formats) survive
-# both a reorder and a hide/show round-trip. Ids in the file but not in the arguments
-# (the invisible tinkerbell.arrange widget itself) keep their place at the end. Both
-# writes are tmp+rename, so a crash mid-write cannot half-eat the bar.
+# Entries travel as whole objects, so per-widget settings (the clock's formats, the
+# spacer's size) survive a reorder, a lane change and a hide/show round-trip. Ids in the
+# file but not in the arguments (the invisible tinkerbell.arrange widget itself) keep
+# their place at the end of the lane they were already in. Writes are tmp+rename, so a
+# crash mid-write cannot half-eat the bar.
 #
-# Refuses rather than guesses: an argument that names no current entry (right section or
-# sidecar), or names one twice, aborts with both files unchanged.
+# Refuses rather than guesses: an argument that names no current entry (either lane or
+# the sidecar), or names one twice, aborts with both files unchanged.
 set -euo pipefail
 python3 - "$@" <<'PY'
 import json, os, sys, tempfile
@@ -22,41 +23,56 @@ side = os.path.expanduser("~/.config/omarchy/bar-hidden.json")
 if not sys.argv[1:]:
     sys.exit("bar-arrange-apply: no ids given")
 
-want = []  # (id, hidden)
+want = []  # (lane, id, hidden)
 for arg in sys.argv[1:]:
-    wid, _, flag = arg.partition(":")
-    want.append((wid, flag == "hidden"))
+    parts = arg.split(":")
+    if parts[0] in ("L", "R"):
+        lane, wid = parts[0], parts[1]
+        hid = len(parts) > 2 and parts[2] == "hidden"
+    else:  # bare id — the pre-lane call form; those panels only knew the right section
+        lane, wid = "R", parts[0]
+        hid = len(parts) > 1 and parts[1] == "hidden"
+    want.append((lane, wid, hid))
 
 with open(path) as f:
     data = json.load(f)
-right = data["bar"]["layout"]["right"]
+layout = data["bar"]["layout"]
+sections = {"L": layout.get("left", []), "R": layout.get("right", [])}
 
-hidden_rows = []
+parked_in = {"L": [], "R": []}
 if os.path.exists(side):
     with open(side) as f:
-        hidden_rows = json.load(f).get("right", [])
+        sd = json.load(f)
+    parked_in["L"] = sd.get("left", [])
+    parked_in["R"] = sd.get("right", [])
 
 pools = {}
-for entry in right:
-    pools.setdefault(entry["id"], []).append(entry)
-for row in hidden_rows:
-    pools.setdefault(row["entry"]["id"], []).append(row["entry"])
+for sec in ("L", "R"):
+    for entry in sections[sec]:
+        pools.setdefault(entry["id"], []).append(entry)
+    for row in parked_in[sec]:
+        pools.setdefault(row["entry"]["id"], []).append(row["entry"])
 
-ordered, parked = [], []
-for pos, (wid, hid) in enumerate(want):
+ordered = {"L": [], "R": []}
+parked = {"L": [], "R": []}
+pos = {"L": 0, "R": 0}
+for lane, wid, hid in want:
     pool = pools.get(wid)
     if not pool:
-        sys.exit(f"bar-arrange-apply: '{wid}' is not in the right section or hidden list (or named twice)")
+        sys.exit(f"bar-arrange-apply: '{wid}' is not in the bar or hidden list (or named twice)")
     entry = pool.pop(0)
     if hid:
-        parked.append({"index": pos, "entry": entry})
+        parked[lane].append({"index": pos[lane], "entry": entry})
     else:
-        ordered.append(entry)
+        ordered[lane].append(entry)
+    pos[lane] += 1
 
-# Whatever was not named keeps its relative order, after the named ones.
-named = ordered + [r["entry"] for r in parked]
-leftovers = [e for e in right if not any(e is o for o in named)]
-data["bar"]["layout"]["right"] = ordered + leftovers
+# Whatever was not named stays in its own lane, after the named ones.
+named = [e for lane in ("L", "R") for e in ordered[lane]] \
+      + [r["entry"] for lane in ("L", "R") for r in parked[lane]]
+for sec, key in (("L", "left"), ("R", "right")):
+    leftovers = [e for e in sections[sec] if not any(e is o for o in named)]
+    layout[key] = ordered[sec] + leftovers
 
 def write(p, obj):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix="." + os.path.basename(p) + ".")
@@ -70,5 +86,5 @@ def write(p, obj):
         raise
 
 write(path, data)
-write(side, {"right": parked})
+write(side, {"left": parked["L"], "right": parked["R"]})
 PY

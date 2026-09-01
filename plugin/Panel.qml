@@ -82,29 +82,42 @@ Panel {
 
   ListModel { id: lm }
 
+  // One list, two lanes: everything ABOVE the divider row sits on the bar's far left,
+  // everything below on the right (Dave, 2026-09-01: "put some of the bar icons on the
+  // far left"). Dragging a row across the divider — or the divider itself — moves the
+  // boundary; the lanes are read off row order at apply time.
+  readonly property string dividerId: "--divider--"
+
+  function laneRows(layout, parked) {
+    var rows = []
+    for (var i = 0; i < layout.length; i++) {
+      var wid = String(layout[i].id || "")
+      if (wid === "" || wid === selfId) continue
+      rows.push({ wid: wid, label: prettyName(wid), hid: false })
+    }
+    // Hidden entries come back at (or near) the spot they were hidden from.
+    parked.sort(function(a, b) { return (a.index || 0) - (b.index || 0) })
+    for (var p = 0; p < parked.length; p++) {
+      var pw = String((parked[p].entry || {}).id || "")
+      if (pw === "" || pw === selfId) continue
+      var at = Math.min(Math.max(0, parked[p].index || 0), rows.length)
+      rows.splice(at, 0, { wid: pw, label: prettyName(pw), hid: true })
+    }
+    return rows
+  }
+
   function loadRows(text) {
     lm.clear()
     loadError = ""
     try {
       // Two files ride one cat (see readProc): shell.json, a marker, bar-hidden.json.
       var parts = text.split("---BARHIDDEN---")
-      var layout = JSON.parse(parts[0]).bar.layout.right
-      var rows = []
-      for (var i = 0; i < layout.length; i++) {
-        var wid = String(layout[i].id || "")
-        if (wid === "" || wid === selfId) continue
-        rows.push({ wid: wid, label: prettyName(wid), hid: false })
-      }
-      // Hidden entries come back at (or near) the spot they were hidden from.
-      var parked = []
-      try { parked = JSON.parse(parts[1] || "{}").right || [] } catch (e2) {}
-      parked.sort(function(a, b) { return (a.index || 0) - (b.index || 0) })
-      for (var p = 0; p < parked.length; p++) {
-        var pw = String((parked[p].entry || {}).id || "")
-        if (pw === "" || pw === selfId) continue
-        var at = Math.min(Math.max(0, parked[p].index || 0), rows.length)
-        rows.splice(at, 0, { wid: pw, label: prettyName(pw), hid: true })
-      }
+      var layout = JSON.parse(parts[0]).bar.layout
+      var parked = {}
+      try { parked = JSON.parse(parts[1] || "{}") } catch (e2) {}
+      var rows = laneRows(layout.left || [], parked.left || [])
+      rows.push({ wid: dividerId, label: "", hid: false })
+      rows = rows.concat(laneRows(layout.right || [], parked.right || []))
       for (var r = 0; r < rows.length; r++) lm.append(rows[r])
     } catch (e) {
       loadError = "Could not read the bar layout file."
@@ -113,7 +126,7 @@ Panel {
   }
 
   function toggleHidden(i) {
-    if (i < 0 || i >= lm.count) return
+    if (i < 0 || i >= lm.count || lm.get(i).wid === dividerId) return
     lm.setProperty(i, "hid", !lm.get(i).hid)
     dirty = true
   }
@@ -133,8 +146,11 @@ Panel {
   function apply() {
     if (applyProc.running) return
     var argv = [applyScript]
-    for (var i = 0; i < lm.count; i++)
-      argv.push(lm.get(i).wid + (lm.get(i).hid ? ":hidden" : ""))
+    var lane = "L"
+    for (var i = 0; i < lm.count; i++) {
+      if (lm.get(i).wid === dividerId) { lane = "R"; continue }
+      argv.push(lane + ":" + lm.get(i).wid + (lm.get(i).hid ? ":hidden" : ""))
+    }
     applyProc.command = argv
     applyProc.running = true
   }
@@ -284,6 +300,8 @@ Panel {
             required property var model
             required property int index
 
+            readonly property bool isDivider: model.wid === root.dividerId
+
             width: list.width
             height: list.slotHeight
             z: dragArea.drag.active ? 10 : 0
@@ -296,14 +314,42 @@ Panel {
               radius: Style.cornerRadius
               color: dragArea.drag.active
                 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+                : wrap.isDivider ? "transparent"
                 : (root.cursor === wrap.index || dragArea.containsMouse)
                   ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
                   : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
 
               Behavior on color { ColorAnimation { duration: 80 } }
 
+              // The lane boundary: a draggable rule inside its own card, so dragging it
+              // moves the visible line. Rows above it sit on the bar's far left, rows
+              // below on the right.
+              Rectangle {
+                visible: wrap.isDivider
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(8)
+                anchors.right: laneTag.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                height: 1
+                color: Qt.darker(root.foreground, 1.6)
+              }
+              Text {
+                id: laneTag
+                visible: wrap.isDivider
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                text: "above = far left"
+                textFormat: Text.PlainText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                color: Qt.darker(root.foreground, 1.6)
+              }
+
               Text {
                 id: grip
+                visible: !wrap.isDivider
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
@@ -333,6 +379,7 @@ Panel {
               // drag area's hit test below (a sibling MouseArea would sit under it).
               Text {
                 id: eye
+                visible: !wrap.isDivider
                 anchors.right: pos.left
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
@@ -346,6 +393,7 @@ Panel {
 
               Text {
                 id: pos
+                visible: !wrap.isDivider
                 anchors.right: parent.right
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
@@ -387,7 +435,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "drag or j/k + J/K  ·  eye / x hides  ·  Enter applies  ·  Esc cancels"
+          text: "drag or j/k + J/K  ·  eye / x hides  ·  above the line = far left  ·  Enter applies"
           textFormat: Text.PlainText
           elide: Text.ElideRight
           font.family: root.fontFamily
