@@ -19,9 +19,9 @@
 # (e.g. `ws4.png`). That is the strongest of the three rules — nothing else can override it.
 #
 # To fill every workspace that has NO image of its own, drop `all.<ext>` next to this script. It
-# stands in for the theme's list, not for the per-workspace files. `all.png` is currently a plain
-# black image, on David's instruction of 2026-08-10 ("make all backgrounds just a plain black image
-# for the time being") — deleting that one file is the whole revert.
+# stands in for the theme's list, not for the per-workspace files. ⚰️ The plain-black `all.png`
+# that sat here from 2026-08-10 was retired on 2026-09-01 (Dave: "move away from the universal
+# all.png") — nothing installs one any more; the rule stays for a hand-dropped file.
 #
 # ⚠️ THE ORDER OF THOSE TWO WAS THE OTHER WAY ROUND UNTIL 2026-08-11, and it read as a broken
 # feature: Dave dropped `ws3.png` in and nothing happened, because `all.png` was still winning. A
@@ -52,10 +52,15 @@ fi
 # order. Re-read on every lookup rather than cached at start: a theme change must take effect without
 # restarting the watcher.
 theme_backgrounds() {
-  local dir
+  # Two folders, merged and sorted, exactly the list `omarchy theme bg next` cycles:
+  # the user's own additions for this theme (~/.config/omarchy/backgrounds/<name> —
+  # `omarchy theme bg install` opens it, Barbarian's + chip does too), then the theme's
+  # shipped images.
+  local dir user
   dir="$(readlink -f "$STATE/theme" 2>/dev/null)/backgrounds"
-  [ -d "$dir" ] || return 0
-  find "$dir" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | sort
+  user="$HOME/.config/omarchy/backgrounds/$(cat "$STATE/theme.name" 2>/dev/null)"
+  find -L "$user" "$dir" -maxdepth 1 -type f \
+    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) 2>/dev/null | sort
 }
 
 # Which image workspace N should show. An explicit ws<N>.<ext> beats everything; failing that

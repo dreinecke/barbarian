@@ -75,6 +75,8 @@ Panel {
   // (-1 = none), and the current theme's background images to offer.
   property int bgPicking: -1
   property var bgThemeList: []
+  // Solid-colour choices for the picker: black plus the current theme's palette.
+  property var bgSolids: []
 
   // The hero's subtitle: one bar pun per opening, cycling through the lot. The pool
   // is Dave-curated (2026-09-01, a 58-strong long-list cut to these survivors).
@@ -278,6 +280,13 @@ Panel {
     bgPicking = -1
   }
 
+  // The + chip: open this theme's user background folder (stock `omarchy theme bg
+  // install`) — drop images in, reopen the picker, they are in the strip.
+  function bgAddImages() {
+    wsActProc.command = ["sh", "-c", "setsid -f omarchy-theme-bg-install >/dev/null 2>&1"]
+    wsActProc.running = true
+  }
+
   function rowForWs(n) {
     for (var i = 0; i < lmW.count; i++) if (lmW.get(i).num === n) return i
     return -1
@@ -338,12 +347,28 @@ Panel {
       var tail2 = String(tail[1] || "").split("---SNAPS---")
       var tail3 = String(tail2[1] || "").split("---CANRENAME---")
       var tail4 = String(tail3[1] || "").split("---BGS---")
-      var tail5 = String(tail4[1] || "").split("---PINS---")
+      var tail4b = String(tail4[1] || "").split("---COLORS---")
+      var tail5 = String(tail4b[1] || "").split("---PINS---")
       canRename = String(tail4[0] || "").trim() !== ""
-      var bgs = [], bl = String(tail5[0] || "").split("\n")
+      var bgs = [], bl = String(tail4b[0] || "").split("\n")
       for (var bi = 0; bi < bl.length; bi++)
         if (/\.(jpg|jpeg|png)$/i.test(bl[bi].trim())) bgs.push(bl[bi].trim())
       bgThemeList = bgs
+      // Black first, then the theme's own colours, deduped (last-horizon's blue IS its
+      // accent) — these become the solid swatches.
+      var sol = [{ name: "black", hex: "#000000" }]
+      var seen = { "#000000": true }
+      var ckeys = ["background", "accent", "muted", "red", "yellow", "green", "cyan", "blue", "magenta"]
+      var cl = String(tail4b[1].split("---PINS---")[0] || "").split("\n")
+      for (var ci = 0; ci < cl.length; ci++) {
+        var cm = cl[ci].match(/^\s*([A-Za-z_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+        if (!cm || ckeys.indexOf(cm[1]) < 0) continue
+        var hx = cm[2].toLowerCase()
+        if (seen[hx]) continue
+        seen[hx] = true
+        sol.push({ name: cm[1], hex: hx })
+      }
+      bgSolids = sol
       var pins = {}
       var pl = String(tail5[1] || "").split("\n")
       for (var pi = 0; pi < pl.length; pi++) {
@@ -453,7 +478,8 @@ Panel {
         "echo ---WS---; hyprctl workspaces -j 2>/dev/null; echo ---ACTIVE---; hyprctl activeworkspace -j 2>/dev/null; " +
         "echo ---SNAPS---; ls \"$HOME/.config/omarchy/workspace-layout/snapshots\" 2>/dev/null; " +
         "echo ---CANRENAME---; command -v \"$HOME/.local/bin/workspace-edit\" 2>/dev/null || true; " +
-        "echo ---BGS---; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; find \"$d\" -maxdepth 1 -type f 2>/dev/null | sort; " +
+        "echo ---BGS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; find -L \"$HOME/.config/omarchy/backgrounds/$tn\" \"$d\" -maxdepth 1 -type f 2>/dev/null | sort; " +
+        "echo ---COLORS---; cat \"$HOME/.local/state/omarchy/current/theme/colors.toml\" 2>/dev/null; " +
         "echo ---PINS---; for f in \"$HOME/.config/omarchy/workspace-backgrounds\"/ws*.*; do [ -e \"$f\" ] && echo \"$f|$(readlink -f \"$f\")\"; done; true"]
       readProc.running = true
     } else if (dirty && !cancelled) {
@@ -820,6 +846,30 @@ Panel {
             }
           }
 
+          // Solid colours: black, then this theme's palette (ws-bg-pick turns the hex
+          // into a flat PNG, since the shell's background only takes image paths).
+          Repeater {
+            model: root.bgSolids
+
+            delegate: Rectangle {
+              required property var modelData
+              readonly property bool current:
+                wrow.model.bgPin.indexOf("/solids/" + modelData.hex.slice(1) + ".png") >= 0
+              width: Style.space(32)
+              height: Style.space(32)
+              radius: Style.cornerRadius
+              color: modelData.hex
+              border.width: current ? 2 : 1
+              border.color: current ? root.accent
+                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+              MouseArea {
+                anchors.fill: parent
+                onClicked: root.bgPick(wrow.model.num, "solid:" + modelData.hex)
+              }
+            }
+          }
+
           Repeater {
             model: root.bgThemeList
 
@@ -845,6 +895,29 @@ Panel {
                 anchors.fill: parent
                 onClicked: root.bgPick(wrow.model.num, modelData)
               }
+            }
+          }
+
+          // Add images to this theme: opens its user background folder in Files.
+          Rectangle {
+            width: Style.space(32)
+            height: Style.space(32)
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+            Text {
+              anchors.centerIn: parent
+              text: "+"
+              textFormat: Text.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              color: root.muted
+            }
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.bgAddImages()
             }
           }
         }

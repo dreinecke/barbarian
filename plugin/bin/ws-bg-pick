@@ -20,6 +20,24 @@ DIR="$HOME/.config/omarchy/workspace-backgrounds"
 WATCHER="$DIR/per-workspace-wallpaper.sh"
 mkdir -p "$DIR"
 
+# A solid colour is an image too: `solid:#rrggbb` caches a tiny flat PNG under solids/
+# (the shell's background plugin only takes image paths) and pins that. The hexes on
+# offer come from the CURRENT theme's colors.toml — that is the per-theme part; the
+# cache is shared by hex, so two themes with the same accent share one file.
+if [[ "$CHOICE" == solid:* ]]; then
+  hex="${CHOICE#solid:}"; hex="${hex,,}"
+  case "$hex" in
+    "#"[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "ws-bg-pick: bad solid colour '$hex'" >&2; exit 1 ;;
+  esac
+  f="$DIR/solids/${hex#\#}.png"
+  if [ ! -f "$f" ]; then
+    mkdir -p "$DIR/solids"
+    magick -size 64x64 "xc:$hex" "$f"
+  fi
+  CHOICE="$f"
+fi
+
 rm -f "$DIR/ws$N".*
 if [ "$CHOICE" != "default" ]; then
   SRC="$(realpath "$CHOICE")"
