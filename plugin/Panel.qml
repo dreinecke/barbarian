@@ -87,6 +87,36 @@ Panel {
     return tail.charAt(0).toUpperCase() + tail.slice(1)
   }
 
+  // The glyph each widget wears on the bar (Dave, 2026-09-01: "🎧 Audio" not "Audio"),
+  // same icon font the bar itself uses. Unknown ids get no glyph, and the fixed-width
+  // icon slot keeps the names aligned either way.
+  function iconFor(wid) {
+    var icons = {
+      "omarchy.tray": "",
+      "tinkerbell.tray": "",
+      "tinkerbell.mail": "",
+      "tinkerbell.messages": "",
+      "omarchy.agents": "󱚣",
+      "limehawk.vpn": "",
+      "omarchy.network": "󰈀",
+      "omarchy.audio": "",
+      "omarchy.monitor": "",
+      "omarchy.bluetooth": "",
+      "jankeesvw.time-machine": "",
+      "jankeesvw.notification-center": "",
+      "jankeesvw.downloads": "",
+      "omarchy.indicators": "",
+      "omarchy.keyboard-layout": "",
+      "omarchy.power": "",
+      "pestov.apple-music": "",
+      "omarchy.system-update": "",
+      "omarchy.clock": "",
+      "omarchy.weather": "",
+      "omarchy.workspaces": ""
+    }
+    return icons[wid] || ""
+  }
+
   ListModel { id: lmL }
   ListModel { id: lmR }
 
@@ -98,7 +128,7 @@ Panel {
     for (var i = 0; i < layout.length; i++) {
       var wid = String(layout[i].id || "")
       if (wid === "" || wid === selfId) continue
-      rows.push({ wid: wid, label: prettyName(wid), hid: false })
+      rows.push({ wid: wid, label: prettyName(wid), glyph: iconFor(wid), hid: false })
     }
     // Hidden entries come back at (or near) the spot they were hidden from.
     parked.sort(function(a, b) { return (a.index || 0) - (b.index || 0) })
@@ -106,7 +136,7 @@ Panel {
       var pw = String((parked[p].entry || {}).id || "")
       if (pw === "" || pw === selfId) continue
       var at = Math.min(Math.max(0, parked[p].index || 0), rows.length)
-      rows.splice(at, 0, { wid: pw, label: prettyName(pw), hid: true })
+      rows.splice(at, 0, { wid: pw, label: prettyName(pw), glyph: iconFor(pw), hid: true })
     }
     for (var r = 0; r < rows.length; r++) model.append(rows[r])
   }
@@ -150,7 +180,7 @@ Panel {
     var m1 = modelFor(fromLane), m2 = modelFor(toLane)
     if (index < 0 || index >= m1.count) return
     var r = m1.get(index)
-    var row = { wid: r.wid, label: r.label, hid: r.hid }
+    var row = { wid: r.wid, label: r.label, glyph: r.glyph, hid: r.hid }
     m1.remove(index)
     at = Math.min(Math.max(0, at), m2.count)
     m2.insert(at, row)
@@ -255,10 +285,12 @@ Panel {
 
         Behavior on color { ColorAnimation { duration: 80 } }
 
+        // Grip lives at the row's far END (Dave, 2026-09-01) so the widget's own glyph
+        // leads the row instead of fighting the hamburger visually.
         Text {
           id: grip
-          anchors.left: parent.left
-          anchors.leftMargin: Style.space(8)
+          anchors.right: parent.right
+          anchors.rightMargin: Style.space(8)
           anchors.verticalCenter: parent.verticalCenter
           text: root.iconGrip
           textFormat: Text.PlainText
@@ -268,8 +300,23 @@ Panel {
         }
 
         Text {
-          anchors.left: grip.right
+          id: glyphSlot
+          anchors.left: parent.left
           anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(16)
+          horizontalAlignment: Text.AlignHCenter
+          text: wrap.model.glyph
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          color: root.foreground
+          opacity: wrap.model.hid ? 0.4 : 0.8
+        }
+
+        Text {
+          anchors.left: glyphSlot.right
+          anchors.leftMargin: Style.space(6)
           anchors.right: eye.left
           anchors.rightMargin: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
@@ -286,8 +333,8 @@ Panel {
         // area's hit test below (a sibling MouseArea would sit under it).
         Text {
           id: eye
-          anchors.right: parent.right
-          anchors.rightMargin: Style.space(8)
+          anchors.right: grip.left
+          anchors.rightMargin: Style.space(10)
           anchors.verticalCenter: parent.verticalCenter
           text: wrap.model.hid ? root.iconEyeSlash : root.iconEye
           textFormat: Text.PlainText
@@ -447,9 +494,10 @@ Panel {
           width: parent.width
           spacing: Style.space(14)
 
-          readonly property real colWidth: (width - spacing) / 2
+          readonly property real colWidth: (width - spacing * 2 - 1) / 2
 
           Column {
+            id: colL
             width: laneRow.colWidth
             spacing: Style.space(2)
 
@@ -470,7 +518,15 @@ Panel {
             }
           }
 
+          // The faint rule between the lanes (Dave, 2026-09-01).
+          Rectangle {
+            width: 1
+            height: Math.max(colL.height, colR.height)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          }
+
           Column {
+            id: colR
             width: laneRow.colWidth
             spacing: Style.space(2)
 
