@@ -433,8 +433,9 @@ Panel {
           textFormat: Text.PlainText
           font.family: root.fontFamily
           font.pixelSize: Style.font.title
-          color: root.foreground
-          opacity: wrap.model.lit ? 0.85 : 0.3
+          // Accent at 75%, dimming to 25% — Dave's picks from the mock editor (2026-09-01).
+          color: root.accent
+          opacity: wrap.model.lit ? 0.75 : 0.25
         }
 
         Text {
@@ -450,7 +451,7 @@ Panel {
           font.pixelSize: Style.font.body
           font.strikeout: wrap.model.hid        // crossed = our setting says hide
           color: root.foreground
-          opacity: wrap.model.lit ? 1 : 0.45    // faded = drawing nothing right now
+          opacity: wrap.model.lit ? 1 : 0.25    // faded = drawing nothing right now
         }
 
         // Eye = shown, slashed eye = parked off the bar. Clicked through the drag
@@ -913,7 +914,8 @@ Panel {
           elide: Text.ElideRight
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          color: Qt.darker(root.foreground, 1.7)
+          color: root.accent
+          opacity: 0.66
         }
       }
     }
