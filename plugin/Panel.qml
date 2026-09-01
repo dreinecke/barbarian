@@ -462,7 +462,7 @@ Panel {
             anchors.right: headerActions.left
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
-            text: "Bar widgets"
+            text: "Barbarian"
             textFormat: Text.PlainText
             elide: Text.ElideRight
             foreground: root.foreground
@@ -527,17 +527,28 @@ Panel {
           Column {
             id: colL
             width: laneRow.colWidth
-            spacing: Style.space(2)
+            spacing: 0
 
             Text {
               width: parent.width
               text: "LEFT"
               textFormat: Text.PlainText
+              horizontalAlignment: Text.AlignHCenter
+              topPadding: Style.space(8)
+              bottomPadding: Style.space(8)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.letterSpacing: 1
               color: Qt.darker(root.foreground, 1.6)
             }
+
+            Rectangle {
+              width: parent.width
+              height: 1
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            }
+
+            Item { width: 1; height: Style.space(4) }
 
             LaneList {
               id: lviewL
@@ -556,17 +567,28 @@ Panel {
           Column {
             id: colR
             width: laneRow.colWidth
-            spacing: Style.space(2)
+            spacing: 0
 
             Text {
               width: parent.width
               text: "RIGHT"
               textFormat: Text.PlainText
+              horizontalAlignment: Text.AlignHCenter
+              topPadding: Style.space(8)
+              bottomPadding: Style.space(8)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.letterSpacing: 1
               color: Qt.darker(root.foreground, 1.6)
             }
+
+            Rectangle {
+              width: parent.width
+              height: 1
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            }
+
+            Item { width: 1; height: Style.space(4) }
 
             LaneList {
               id: lviewR
