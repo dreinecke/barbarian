@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ws-bg-remove <image-path> — take one of Dave's own background images out of the current
+# theme: every desk pinned to it goes back to Auto, then the file goes to the trash.
+#
+# Barbarian's × on an image tile (Dave, 2026-09-03: "we need to be able to remove a background
+# as well. Hover reveals an x in top right. And sets the background to auto"). Only an image in
+# ~/.config/omarchy/backgrounds/<theme>/ — the folder ws-bg-add copies into — can be removed:
+# a theme's shipped images belong to the omarchy package and Barbarian shows no × on them.
+#
+# Every desk's pin to the image is dropped, not just the desk whose picker was open. A pin is a
+# symlink to the file; per-workspace-wallpaper.sh skips a pin whose target is gone, so those
+# desks would fall back to Auto on their next switch anyway, but the desk on screen would keep
+# the removed image until then and a dangling link would be left behind in the pins folder.
+# ws-bg-pick does each unpin and repaints when that desk is the one on screen. The file itself
+# is trashed (`gio trash`), not deleted, so a wrong click can be undone from Files.
+set -euo pipefail
+
+IMG="${1:?usage: ws-bg-remove <image-path>}"
+HERE="$(dirname "$(readlink -f "$0")")"
+USERBG="$HOME/.config/omarchy/backgrounds"
+THEME="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme.name" 2>/dev/null)"
+[ -n "$THEME" ] || { echo "ws-bg-remove: no current theme name" >&2; exit 1; }
+
+REAL="$(realpath -- "$IMG")"
+case "$REAL" in
+  "$USERBG"/*) ;;
+  *) echo "ws-bg-remove: not one of your own backgrounds: $IMG" >&2; exit 1 ;;
+esac
+[ -f "$REAL" ] || { echo "ws-bg-remove: no such image: $REAL" >&2; exit 1; }
+
+PINDIR="$HOME/.config/omarchy/workspace-backgrounds/$THEME"
+for pin in "$PINDIR"/ws*.*; do
+  [ -L "$pin" ] || [ -e "$pin" ] || continue
+  [ "$(readlink -f -- "$pin" 2>/dev/null)" = "$REAL" ] || continue
+  n="${pin##*/ws}"; n="${n%%.*}"
+  "$HERE/ws-bg-pick" "$n" default
+  echo "unpinned ws$n"
+done
+
+if command -v gio >/dev/null 2>&1; then
+  gio trash -- "$REAL" 2>/dev/null || rm -f -- "$REAL"
+else
+  rm -f -- "$REAL"
+fi
+echo "removed $REAL"

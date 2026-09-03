@@ -37,6 +37,11 @@ Panel {
     Qt.resolvedUrl("bin/ws-bg-pick").toString().replace(/^file:\/\//, "")
   readonly property string addScript:
     Qt.resolvedUrl("bin/ws-bg-add").toString().replace(/^file:\/\//, "")
+  readonly property string removeScript:
+    Qt.resolvedUrl("bin/ws-bg-remove").toString().replace(/^file:\/\//, "")
+  // Dave's own background images live under here (ws-bg-add copies into it); only these get
+  // the × — a theme's shipped images belong to the omarchy package.
+  readonly property string userBgDir: Quickshell.env("HOME") + "/.config/omarchy/backgrounds/"
   // This widget must never list (or reorder away) itself.
   readonly property string selfId: "tinkerbell.arrange"
 
@@ -330,6 +335,19 @@ Panel {
     bgPicking = -1
     close()
     Quickshell.execDetached(["sh", "-c", '"' + addScript + '" ' + n + " >/dev/null 2>&1"])
+  }
+
+  // The × on an image tile (Dave, 2026-09-03: "Hover reveals an x in top right. And sets the
+  // background to auto"): the image leaves the theme — every desk pinned to it goes back to
+  // Auto and the file goes to the trash (bin/ws-bg-remove). The strip and the rows are updated
+  // here at once, and the picker view stays open.
+  function bgRemove(path) {
+    wsActProc.command = ["sh", "-c", '"' + removeScript + '" ' + JSON.stringify(path)]
+    wsActProc.running = true
+    bgThemeList = bgThemeList.filter(function(p) { return p !== path })
+    for (var i = 0; i < lmW.count; i++)
+      if (lmW.get(i).bgPin === path) lmW.setProperty(i, "bgPin", "")
+    if (bgPickingPin === path) bgPickingPin = ""
   }
 
   function rowForWs(n) {
@@ -1426,6 +1444,7 @@ Panel {
               delegate: ClippingRectangle {
                 required property var modelData
                 readonly property bool current: root.bgPickingPin === modelData
+                readonly property bool removable: String(modelData).indexOf(root.userBgDir) === 0
                 width: pickFlow.tileW
                 height: pickFlow.tileH
                 radius: Style.cornerRadius
@@ -1442,8 +1461,40 @@ Panel {
                   asynchronous: true
                 }
                 MouseArea {
+                  id: tileArea
                   anchors.fill: parent
+                  hoverEnabled: true
                   onClicked: root.bgPick(root.bgPicking, modelData)
+                }
+
+                // Hover reveals a × in the top-right corner of one of Dave's own images; a
+                // faint dark disc keeps it legible over a bright picture.
+                Rectangle {
+                  visible: removable && (tileArea.containsMouse || xArea.containsMouse)
+                  anchors.top: parent.top
+                  anchors.right: parent.right
+                  anchors.margins: Style.space(8)
+                  width: Style.space(26)
+                  height: width
+                  radius: width / 2
+                  color: Qt.rgba(0, 0, 0, xArea.containsMouse ? 0.55 : 0.35)
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: "\u2715"
+                    textFormat: Text.PlainText
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                    font.bold: true
+                    color: xArea.containsMouse ? "#ff6b81" : "#ff3d5a"
+                  }
+                  MouseArea {
+                    id: xArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.bgRemove(modelData)
+                  }
                 }
               }
             }
