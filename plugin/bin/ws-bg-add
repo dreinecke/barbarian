@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# ws-bg-add <N> — choose an image from Pictures or Downloads in the shell's image grid
+# (thumbnails, type to filter), copy it into the current theme's user-backgrounds folder, and
+# pin it as desk N's wallpaper.
+#
+# Barbarian's + chip (Dave, 2026-09-03: "a file picker with thumbnails so I can choose a file
+# and once chosen Barbarian makes a copy of it into the appropriate folder and makes it the
+# selection for that particular workspace" — and on the folders, "Pictures + Downloads =
+# Perfect!"). Until then the chip ran the stock `omarchy theme bg install`, which opens Files on
+# the folder and leaves the rest to hand. The grid is Omarchy's own — `omarchy-menu-images`, the
+# one `omarchy background` uses — so it looks like the rest of the shell, and it keeps its
+# thumbnails under ~/.cache/omarchy/image-selector (a folder is shown at once with full images
+# standing in for thumbnails it has not made yet). Escape in the grid changes nothing.
+#
+# The copy lands in ~/.config/omarchy/backgrounds/<theme>/, the folder Omarchy already reads as
+# that theme's extra backgrounds, so the image joins the theme's strip in Barbarian and in the
+# stock background switcher alike. A name already taken by a DIFFERENT file gets a numbered
+# suffix; the same file again is reused, not copied twice. The pin itself is ws-bg-pick's job
+# (this script only chooses and copies), and it repaints when desk N is the one on screen.
+#
+# WS_BG_ADD_PICK=<image> skips the grid and uses that file — for tests, which cannot click.
+set -euo pipefail
+
+N="${1:?usage: ws-bg-add <N>}"
+case "$N" in ''|*[!0-9]*) echo "ws-bg-add: '$N' is not a workspace number" >&2; exit 1 ;; esac
+
+THEME="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme.name" 2>/dev/null)"
+[ -n "$THEME" ] || { echo "ws-bg-add: no current theme name" >&2; exit 1; }
+DEST="$HOME/.config/omarchy/backgrounds/$THEME"
+mkdir -p "$DEST"
+
+# The folders on offer. A missing one is simply absent from the grid.
+FOLDERS=("$HOME/Pictures" "$HOME/Downloads")
+
+picked="${WS_BG_ADD_PICK:-}"
+[ -n "$picked" ] || picked="$(omarchy-menu-images --show-labels --filterable --lazy-thumbnails "${FOLDERS[@]}")"
+[ -n "$picked" ] || exit 0
+[ -f "$picked" ] || { echo "ws-bg-add: not a file: $picked" >&2; exit 1; }
+
+name="$(basename -- "$picked")"
+target="$DEST/$name"
+if [ -e "$target" ] && ! cmp -s -- "$picked" "$target"; then
+  stem="${name%.*}"; ext="${name##*.}"; i=2
+  while [ -e "$DEST/$stem-$i.$ext" ] && ! cmp -s -- "$picked" "$DEST/$stem-$i.$ext"; do i=$((i + 1)); done
+  target="$DEST/$stem-$i.$ext"
+fi
+[ -e "$target" ] || cp -- "$picked" "$target"
+
+exec "$(dirname "$(readlink -f "$0")")/ws-bg-pick" "$N" "$target"

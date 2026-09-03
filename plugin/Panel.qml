@@ -35,6 +35,8 @@ Panel {
     Qt.resolvedUrl("bin/bar-arrange-apply").toString().replace(/^file:\/\//, "")
   readonly property string pickScript:
     Qt.resolvedUrl("bin/ws-bg-pick").toString().replace(/^file:\/\//, "")
+  readonly property string addScript:
+    Qt.resolvedUrl("bin/ws-bg-add").toString().replace(/^file:\/\//, "")
   // This widget must never list (or reorder away) itself.
   readonly property string selfId: "tinkerbell.arrange"
 
@@ -316,11 +318,18 @@ Panel {
     bgPicking = -1
   }
 
-  // The + chip: open this theme's user background folder (stock `omarchy theme bg
-  // install`) — drop images in, reopen the picker, they are in the strip.
-  function bgAddImages() {
-    wsActProc.command = ["sh", "-c", "setsid -f omarchy-theme-bg-install >/dev/null 2>&1"]
-    wsActProc.running = true
+  // The + chip: the shell's own image grid over Pictures and Downloads (thumbnails, type to
+  // filter); the pick is copied into this theme's user background folder and pinned to the
+  // desk whose picker was open (Dave, 2026-09-03 — until then the chip opened Files on that
+  // folder, stock `omarchy theme bg install`, and left the rest to hand). bin/ws-bg-add does
+  // all of it and takes as long as Dave takes to choose, so it runs detached and the panel
+  // closes first: the grid fills the screen, and the desk repaints the moment he picks.
+  function bgAddImage() {
+    var n = bgPicking
+    if (n < 0) return
+    bgPicking = -1
+    close()
+    Quickshell.execDetached(["sh", "-c", '"' + addScript + '" ' + n + " >/dev/null 2>&1"])
   }
 
   function rowForWs(n) {
@@ -1457,7 +1466,7 @@ Panel {
               }
               MouseArea {
                 anchors.fill: parent
-                onClicked: root.bgAddImages()
+                onClicked: root.bgAddImage()
               }
             }
           }
