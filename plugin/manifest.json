@@ -3,7 +3,7 @@
   "id": "tinkerbell.arrange",
   "name": "Barbarian",
   "version": "1.0.0",
-  "author": "Jace",
+  "author": "dreinecke",
   "license": "MIT",
   "description": "Barbarian \u2014 the bar arranger: two columns (far-left and right lanes), drag to reorder or re-lane, eye/x to hide; written to shell.json + bar-hidden.json when the panel closes.",
   "kinds": [
