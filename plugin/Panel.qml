@@ -33,7 +33,8 @@ import qs.Ui
 // for a spacer) that the eye and x did in list mode; hovering shows the name. A desk
 // chip goes to the desk on click and offers the desk row's buttons on right-click
 // (background, rename in place, save, restore). A tile parked off the bar wears the
-// theme's urgent colour, which is the whole signal — no badge on the corner. The keys follow the layout: h/l walk
+// theme's urgent colour at the same 40% as a widget drawing nothing — the colour is
+// the whole signal, with no badge on the corner. The keys follow the layout: h/l walk
 // a row, j/k hop rows, H/L carry, J/K throw. The
 // choice is a view preference, not a bar change — it is written to
 // ~/.local/state/omarchy/barbarian.json the moment it flips (shell.json would do, but
@@ -1086,12 +1087,12 @@ Panel {
             font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
             font.bold: slot.model.glyph === ""
             // Parked off the bar: the urgent colour, and no badge in the corner — the
-            // colour says it on its own (Dave, 2026-09-12). Full strength too: a parked
-            // widget draws nothing, so the faded treatment below would bury the signal.
+            // colour says it on its own (Dave, 2026-09-12).
             color: slot.model.hid ? root.urgent : root.foreground
-            // The glyph is the whole tile here, so it wears the label's full brightness;
-            // faded = drawing nothing right now, as in list mode.
-            opacity: slot.model.hid || slot.model.lit ? 1 : 0.4
+            // One faded level for both of the quiet states, so the colour is the only
+            // difference between them (Dave, the same day): parked, or on the bar and
+            // drawing nothing right now.
+            opacity: slot.model.hid || !slot.model.lit ? 0.4 : 1
           }
         }
 
