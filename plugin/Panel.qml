@@ -32,7 +32,8 @@ import qs.Ui
 // lanes; a right-click opens a small menu with the name and the hide/show (delete,
 // for a spacer) that the eye and x did in list mode; hovering shows the name. A desk
 // chip goes to the desk on click and offers the desk row's buttons on right-click
-// (background, rename in place, save, restore). The keys follow the layout: h/l walk
+// (background, rename in place, save, restore). A tile parked off the bar wears the
+// theme's urgent colour, which is the whole signal — no badge on the corner. The keys follow the layout: h/l walk
 // a row, j/k hop rows, H/L carry, J/K throw. The
 // choice is a view preference, not a bar change — it is written to
 // ~/.local/state/omarchy/barbarian.json the moment it flips (shell.json would do, but
@@ -64,6 +65,7 @@ Panel {
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color accent: Color.accent
   readonly property color muted: Color.muted
+  readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property string iconHero: "󰞇"
@@ -798,10 +800,11 @@ Panel {
             textFormat: Text.PlainText
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
-            // Dave's second mock-editor pass (2026-09-01): foreground at 55%, dim 25%;
-            // headings and helper wear muted, the rules accent at 18%.
+            // Dave's second mock-editor pass (2026-09-01): foreground at 55%, dim 40%
+            // (raised from 25% on 2026-09-12); headings and helper wear muted, the
+            // rules accent at 18%.
             color: root.foreground
-            opacity: wrap.model.lit ? 0.55 : 0.25
+            opacity: wrap.model.lit ? 0.55 : 0.4
           }
         }
 
@@ -818,7 +821,7 @@ Panel {
           font.pixelSize: Style.font.body
           font.strikeout: wrap.model.hid        // crossed = our setting says hide
           color: root.foreground
-          opacity: wrap.model.lit ? 1 : 0.25    // faded = drawing nothing right now
+          opacity: wrap.model.lit ? 1 : 0.4     // faded = drawing nothing right now
         }
 
         // Spacers only: an x that deletes the row outright (hide would just park it).
@@ -1082,25 +1085,13 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
             font.bold: slot.model.glyph === ""
-            color: root.foreground
+            // Parked off the bar: the urgent colour, and no badge in the corner — the
+            // colour says it on its own (Dave, 2026-09-12). Full strength too: a parked
+            // widget draws nothing, so the faded treatment below would bury the signal.
+            color: slot.model.hid ? root.urgent : root.foreground
             // The glyph is the whole tile here, so it wears the label's full brightness;
             // faded = drawing nothing right now, as in list mode.
-            opacity: slot.model.lit ? 1 : 0.25
-          }
-
-          // Parked off the bar: the slashed eye in the corner (the label's strikethrough
-          // has no label to live on in this mode).
-          Text {
-            visible: slot.model.hid
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.margins: Style.space(1)
-            text: root.iconEyeSlash
-            textFormat: Text.PlainText
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            color: root.foreground
-            opacity: 0.8
+            opacity: slot.model.hid || slot.model.lit ? 1 : 0.4
           }
         }
 
@@ -1772,7 +1763,7 @@ Panel {
             textFormat: Text.PlainText
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            color: bar ? bar.urgent : Color.urgent
+            color: root.urgent
           }
         }
 
