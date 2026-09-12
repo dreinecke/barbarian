@@ -24,12 +24,16 @@ import qs.Ui
 // deleted — and the bar hot-reloads.
 //
 // ICON-ONLY MODE since 2026-09-12 (Dave: a toggle "by the tick and cross" that shows
-// "the tray icon sections as a horizontal row of icons without the name"): each icon
-// lane becomes one full-width row of glyph tiles, the desks list sits beneath at full
-// width. Tiles drag along a row to reorder and onto another row to change lanes; a
-// right-click opens a small menu with the name and the hide/show (delete, for a
-// spacer) that the eye and x did in list mode; hovering shows the name. The keys
-// follow the layout: h/l walk a row, j/k hop rows, H/L carry, J/K throw. The
+// "the tray icon sections as a horizontal row of icons without the name"): three rows
+// in the bar's own order, each placed as it sits on the bar — the left lane's tiles
+// hug the left edge, the right lane's the right edge, the strip's row (Dave, the same
+// day: "Workspaces | Enterprise Webscape Personal ...") shows the desks as chips in
+// the middle. Tiles drag along a row to reorder and onto another row to change
+// lanes; a right-click opens a small menu with the name and the hide/show (delete,
+// for a spacer) that the eye and x did in list mode; hovering shows the name. A desk
+// chip goes to the desk on click and offers the desk row's buttons on right-click
+// (background, rename in place, save, restore). The keys follow the layout: h/l walk
+// a row, j/k hop rows, H/L carry, J/K throw. The
 // choice is a view preference, not a bar change — it is written to
 // ~/.local/state/omarchy/barbarian.json the moment it flips (shell.json would do, but
 // the shell watches that file and would rebuild the bar under the open panel), so it
@@ -81,15 +85,16 @@ Panel {
   // there by setIconsOnly — never staged, never part of apply.
   property bool iconsOnly: false
   readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/barbarian.json"
-  // The tile menu (right-click in icon-only mode): which tile it is about, a snapshot of
-  // the row it was opened on, and which choice the keyboard cursor sits on.
+  // The small menu a right-click opens in icon-only mode (on a tile or a desk chip):
+  // its heading, its choices — { glyph, label, note, enabled, act } — and which choice
+  // the keyboard cursor sits on.
   property bool tileMenuOpen: false
-  property string menuLane: "R"
-  property int menuIndex: -1
   property int menuCursor: 0
   property string menuLabel: ""
-  property bool menuHid: false
-  property bool menuSpacer: false
+  property var menuChoices: []
+  // Icon-only mode's rows share one caption column and one slot height.
+  readonly property int rowCaptionWidth: Style.space(84)
+  readonly property int rowSlotHeight: Style.space(42)
 
   property string curLane: "R"
   property int cursor: 0
@@ -243,34 +248,61 @@ Panel {
     iconsOnly = state.view === "icons"
   }
 
-  // The tile menu opens under the right-clicked tile with a snapshot of its row: the
-  // menu closes on every choice, so the snapshot cannot go stale.
-  function openTileMenu(lane, i, slotItem) {
-    var m = modelFor(lane)
-    if (i < 0 || i >= m.count) return
-    var r = m.get(i)
-    menuLane = lane
-    menuIndex = i
+  // The menu opens under the right-clicked item with its choices built on the spot —
+  // each one's `act` closes over what it needs, and the menu closes on every choice,
+  // so nothing in it can go stale.
+  function openMenu(label, choices, anchorItem) {
+    menuLabel = label
+    menuChoices = choices
     menuCursor = 0
-    menuLabel = r.label
-    menuHid = r.hid
-    menuSpacer = r.wid === "omarchy.spacer"
-    curLane = lane
-    cursor = i
-    var p = slotItem.mapToItem(keyCatcher, 0, slotItem.height)
+    var p = anchorItem.mapToItem(keyCatcher, 0, anchorItem.height)
     tileMenu.x = Math.max(0, Math.min(p.x, keyCatcher.width - tileMenu.width))
     tileMenu.y = p.y
     tileMenu.open()
   }
 
+  // A tile's menu: the eye's hide/show and, for a spacer, the x's delete.
+  function openTileMenu(lane, i, slotItem) {
+    var m = modelFor(lane)
+    if (i < 0 || i >= m.count) return
+    var r = m.get(i)
+    curLane = lane
+    cursor = i
+    var choices = [{ glyph: r.hid ? iconEye : iconEyeSlash, label: r.hid ? "Show" : "Hide",
+                     enabled: true, act: function() { toggleHidden(lane, i) } }]
+    if (r.wid === "omarchy.spacer")
+      choices.push({ glyph: iconX, label: "Delete", enabled: true,
+                     act: function() { removeSpacer(lane, i) } })
+    openMenu(r.label, choices, slotItem)
+  }
+
+  // A desk chip's menu: the desk row's buttons — background, rename (where renaming
+  // exists on this machine), save, and restore, which stays listed but inert without a
+  // recording, as the row's dimmed button does.
+  function openDeskMenu(i, chipItem) {
+    if (i < 0 || i >= lmW.count) return
+    var d = lmW.get(i)
+    var n = d.num, name = d.name, pin = d.bgPin, hasSnap = d.hasSnap
+    var choices = [{ glyph: iconImage, label: "Background", enabled: true,
+                     act: function() { openBgPicker(n, name, pin) } }]
+    if (canRename)
+      choices.push({ glyph: iconPencil, label: "Rename", enabled: true,
+                     act: function() { wsEditing = i } })
+    choices.push({ glyph: iconSave, label: "Save layout", enabled: true,
+                   act: function() { wsSave(n) } })
+    choices.push({ glyph: iconRestore, label: "Restore layout", note: hasSnap ? "" : "no recording",
+                   enabled: hasSnap, act: function() { wsRestore(n) } })
+    openMenu(name, choices, chipItem)
+  }
+
   function menuChoose(i) {
-    if (i === 0) toggleHidden(menuLane, menuIndex)
-    else if (i === 1 && menuSpacer) removeSpacer(menuLane, menuIndex)
+    var choice = menuChoices[i]
     tileMenu.close()
+    if (choice && choice.enabled) choice.act()
   }
 
   function menuMove(delta) {
-    menuCursor = Math.max(0, Math.min(menuSpacer ? 1 : 0, menuCursor + delta))
+    menuCursor = Math.max(0, Math.min(menuChoices.length - 1, menuCursor + delta))
   }
 
   // Whether a widget is ACTUALLY drawing anything on the bar right now — independent of
@@ -926,31 +958,34 @@ Panel {
     }
   }
 
-  // Icon-only mode's row: the same lane model as a LaneList, laid out as one horizontal
-  // strip of glyph tiles behind a caption. Drag along the row reorders live; drag onto
-  // another row and release, and the tile changes lanes at the drop spot. Right-click
-  // opens the tile menu, hovering shows the name the tile no longer carries. A + tile
-  // at the end stages a spacer, like the "+ spacer" foot of a column.
+  // Icon-only mode's lane row: the same lane model as a LaneList, laid out as one
+  // horizontal strip of glyph tiles beside a caption and placed as the lane sits on
+  // the bar — `align` puts the strip at the left edge, the centre or the right edge.
+  // Drag along the row reorders live; drag onto another row and release, and the tile
+  // changes lanes at the drop spot. Right-click opens the tile menu, hovering shows
+  // the name the tile no longer carries. A + tile at the end stages a spacer, like the
+  // "+ spacer" foot of a column.
   component IconRow: Item {
     id: irow
 
     property string lane: "R"
     property string caption: ""
+    // "left", "center" or "right".
+    property string align: "left"
     // The other icon rows, for the cross-row drop test (their own `visible` says
     // whether they are on screen in this mode).
     property var others: []
     readonly property Item strip: stripView
+    readonly property bool dragging: stripView.dragging
 
     width: parent.width
     height: Style.space(34)
-    // Rows are siblings: a tile dragged onto a later row would paint under it.
-    z: stripView.dragging ? 5 : 0
 
     Text {
       id: cap
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(64)
+      width: root.rowCaptionWidth
       text: irow.caption
       textFormat: Text.PlainText
       font.family: root.fontFamily
@@ -959,190 +994,314 @@ Panel {
       color: root.muted
     }
 
-    ListView {
-      id: stripView
-
-      property bool dragging: false
-      readonly property int slotWidth: Style.space(32)
-
-      anchors.left: cap.right
-      anchors.top: parent.top
-      orientation: ListView.Horizontal
-      // One empty slot beyond the last tile, always — room to drop at the end.
-      width: (count + 1) * slotWidth
+    // The strip and its + tile move as one block, placed by `align` in the room
+    // beside the caption.
+    Item {
+      id: block
+      readonly property real room: irow.width - cap.width
+      x: cap.width + (irow.align === "right" ? room - width
+                      : irow.align === "center" ? (room - width) / 2 : 0)
+      width: stripView.width + addTile.width
       height: irow.height
-      clip: false
-      interactive: false
-      spacing: 0
-      model: irow.lane === "L" ? lmL : irow.lane === "C" ? lmC : lmR
 
-      move: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-      moveDisplaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-      displaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+      ListView {
+        id: stripView
 
-      delegate: Item {
-        id: slot
-        required property var model
-        required property int index
-        readonly property bool spacer: model.wid === "omarchy.spacer"
+        property bool dragging: false
+        readonly property int slotWidth: Style.space(32)
 
+        anchors.left: parent.left
+        anchors.top: parent.top
+        orientation: ListView.Horizontal
+        // One empty slot beyond the last tile, always — room to drop at the end.
+        width: (count + 1) * slotWidth
+        height: irow.height
+        clip: false
+        interactive: false
+        spacing: 0
+        model: irow.lane === "L" ? lmL : irow.lane === "C" ? lmC : lmR
+
+        move: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+        moveDisplaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+        displaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+
+        delegate: Item {
+          id: slot
+          required property var model
+          required property int index
+          readonly property bool spacer: model.wid === "omarchy.spacer"
+
+          width: stripView.slotWidth
+          height: stripView.height
+          z: tileArea.drag.active ? 10 : 0
+
+          Rectangle {
+            id: tile
+            x: Style.space(2)
+            y: Style.space(2)
+            width: slot.width - Style.space(4)
+            height: slot.height - Style.space(4)
+            radius: Style.cornerRadius
+            color: tileArea.drag.active
+              ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+              : (root.curLane === irow.lane && root.cursor === slot.index) || tileArea.containsMouse
+                ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+            // A spacer has no glyph: its outline is what says "blank space here".
+            border.width: slot.spacer ? 1 : 0
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+
+            Behavior on color { ColorAnimation { duration: 80 } }
+
+            Text {
+              anchors.centerIn: parent
+              text: slot.spacer ? "" : slot.model.glyph !== "" ? slot.model.glyph
+                                                               : root.monogramFor(slot.model.label)
+              textFormat: Text.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
+              font.bold: slot.model.glyph === ""
+              color: root.foreground
+              // The glyph is the whole tile here, so it wears the label's full brightness;
+              // faded = drawing nothing right now, as in list mode.
+              opacity: slot.model.lit ? 1 : 0.25
+            }
+
+            // Parked off the bar: the slashed eye in the corner (the label's strikethrough
+            // has no label to live on in this mode).
+            Text {
+              visible: slot.model.hid
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.margins: Style.space(1)
+              text: root.iconEyeSlash
+              textFormat: Text.PlainText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              color: root.foreground
+              opacity: 0.8
+            }
+          }
+
+          PanelToolTip {
+            visible: tileArea.containsMouse && !tileArea.drag.active && !root.tileMenuOpen
+            text: slot.model.label
+            fontFamily: root.fontFamily
+          }
+
+          // Left button only: the right button falls through to the TapHandler below, so a
+          // right-click can never start a drag.
+          MouseArea {
+            id: tileArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+            drag.target: tile
+            drag.axis: Drag.XAndYAxis
+            drag.onActiveChanged: stripView.dragging = drag.active
+
+            onContainsMouseChanged: if (containsMouse) { root.curLane = irow.lane; root.cursor = slot.index }
+            onPositionChanged: {
+              if (!drag.active) return
+              var c = tile.mapToItem(stripView, tile.width / 2, tile.height / 2)
+              if (c.y >= 0 && c.y <= stripView.height) {
+                // Still over the home row: live-reorder.
+                var centerX = tile.mapToItem(stripView.contentItem, tile.width / 2, 0).x
+                var to = Math.max(0, Math.min(stripView.count - 1,
+                                              Math.floor(centerX / stripView.slotWidth)))
+                if (to !== slot.index) root.moveItem(irow.lane, slot.index, to)
+              }
+            }
+            onReleased: {
+              stripView.dragging = false
+              // Dropped over another visible row? The tile changes lanes there.
+              for (var oi = 0; oi < irow.others.length; oi++) {
+                var other = irow.others[oi]
+                if (!other || !other.visible) continue
+                var o = tile.mapToItem(other.strip, tile.width / 2, tile.height / 2)
+                if (o.y >= -Style.space(6) && o.y <= other.strip.height + Style.space(6)) {
+                  var at = Math.max(0, Math.min(other.strip.count,
+                                                Math.round(o.x / stripView.slotWidth)))
+                  root.moveAcross(irow.lane, slot.index, other.lane, at)
+                  break
+                }
+              }
+              tile.x = Style.space(2); tile.y = Style.space(2)
+            }
+            onCanceled: { stripView.dragging = false; tile.x = Style.space(2); tile.y = Style.space(2) }
+          }
+
+          TapHandler {
+            acceptedButtons: Qt.RightButton
+            onTapped: root.openTileMenu(irow.lane, slot.index, slot)
+          }
+        }
+      }
+
+      // The + tile: a spacer-shaped tile that stages a new spacer in this lane.
+      Item {
+        id: addTile
+        anchors.left: stripView.right
+        anchors.top: parent.top
         width: stripView.slotWidth
-        height: stripView.height
-        z: tileArea.drag.active ? 10 : 0
+        height: irow.height
 
         Rectangle {
-          id: tile
           x: Style.space(2)
           y: Style.space(2)
-          width: slot.width - Style.space(4)
-          height: slot.height - Style.space(4)
+          width: parent.width - Style.space(4)
+          height: parent.height - Style.space(4)
           radius: Style.cornerRadius
-          color: tileArea.drag.active
-            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-            : (root.curLane === irow.lane && root.cursor === slot.index) || tileArea.containsMouse
-              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
-              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-          // A spacer has no glyph: its outline is what says "blank space here".
-          border.width: slot.spacer ? 1 : 0
-          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
-
-          Behavior on color { ColorAnimation { duration: 80 } }
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                         addArea.containsMouse ? 0.10 : 0.04)
 
           Text {
             anchors.centerIn: parent
-            text: slot.spacer ? "" : slot.model.glyph !== "" ? slot.model.glyph
-                                                             : root.monogramFor(slot.model.label)
+            text: "+"
             textFormat: Text.PlainText
             font.family: root.fontFamily
-            font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
-            font.bold: slot.model.glyph === ""
+            font.pixelSize: Style.font.title
             color: root.foreground
-            // The glyph is the whole tile here, so it wears the label's full brightness;
-            // faded = drawing nothing right now, as in list mode.
-            opacity: slot.model.lit ? 1 : 0.25
-          }
-
-          // Parked off the bar: the slashed eye in the corner (the label's strikethrough
-          // has no label to live on in this mode).
-          Text {
-            visible: slot.model.hid
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.margins: Style.space(1)
-            text: root.iconEyeSlash
-            textFormat: Text.PlainText
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            color: root.foreground
-            opacity: 0.8
+            opacity: addArea.containsMouse ? 0.85 : 0.4
           }
         }
 
         PanelToolTip {
-          visible: tileArea.containsMouse && !tileArea.drag.active && !root.tileMenuOpen
-          text: slot.model.label
+          visible: addArea.containsMouse
+          text: "Add a spacer"
           fontFamily: root.fontFamily
         }
 
-        // Left button only: the right button falls through to the TapHandler below, so a
-        // right-click can never start a drag.
         MouseArea {
-          id: tileArea
+          id: addArea
           anchors.fill: parent
           hoverEnabled: true
-          cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-          drag.target: tile
-          drag.axis: Drag.XAndYAxis
-          drag.onActiveChanged: stripView.dragging = drag.active
-
-          onContainsMouseChanged: if (containsMouse) { root.curLane = irow.lane; root.cursor = slot.index }
-          onPositionChanged: {
-            if (!drag.active) return
-            var c = tile.mapToItem(stripView, tile.width / 2, tile.height / 2)
-            if (c.y >= 0 && c.y <= stripView.height) {
-              // Still over the home row: live-reorder.
-              var centerX = tile.mapToItem(stripView.contentItem, tile.width / 2, 0).x
-              var to = Math.max(0, Math.min(stripView.count - 1,
-                                            Math.floor(centerX / stripView.slotWidth)))
-              if (to !== slot.index) root.moveItem(irow.lane, slot.index, to)
-            }
-          }
-          onReleased: {
-            stripView.dragging = false
-            // Dropped over another visible row? The tile changes lanes there.
-            for (var oi = 0; oi < irow.others.length; oi++) {
-              var other = irow.others[oi]
-              if (!other || !other.visible) continue
-              var o = tile.mapToItem(other.strip, tile.width / 2, tile.height / 2)
-              if (o.y >= -Style.space(6) && o.y <= other.strip.height + Style.space(6)) {
-                var at = Math.max(0, Math.min(other.strip.count,
-                                              Math.round(o.x / stripView.slotWidth)))
-                root.moveAcross(irow.lane, slot.index, other.lane, at)
-                break
-              }
-            }
-            tile.x = Style.space(2); tile.y = Style.space(2)
-          }
-          onCanceled: { stripView.dragging = false; tile.x = Style.space(2); tile.y = Style.space(2) }
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.addSpacer(irow.lane)
         }
-
-        TapHandler {
-          acceptedButtons: Qt.RightButton
-          onTapped: root.openTileMenu(irow.lane, slot.index, slot)
-        }
-      }
-    }
-
-    // The + tile: a spacer-shaped tile that stages a new spacer in this lane.
-    Item {
-      anchors.left: stripView.right
-      anchors.top: parent.top
-      width: stripView.slotWidth
-      height: irow.height
-
-      Rectangle {
-        x: Style.space(2)
-        y: Style.space(2)
-        width: parent.width - Style.space(4)
-        height: parent.height - Style.space(4)
-        radius: Style.cornerRadius
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
-                       addArea.containsMouse ? 0.10 : 0.04)
-
-        Text {
-          anchors.centerIn: parent
-          text: "+"
-          textFormat: Text.PlainText
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          color: root.foreground
-          opacity: addArea.containsMouse ? 0.85 : 0.4
-        }
-      }
-
-      PanelToolTip {
-        visible: addArea.containsMouse
-        text: "Add a spacer"
-        fontFamily: root.fontFamily
-      }
-
-      MouseArea {
-        id: addArea
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: root.addSpacer(irow.lane)
       }
     }
   }
 
-  // One line of the tile menu: a glyph and a word, lit while the menu's cursor is on
-  // it (hover moves the cursor, the cursor paints — the panel kit's rule).
+  // Icon-only mode's workspaces row: the desks as chips, placed as the strip sits on
+  // the bar. A click goes to the desk; a right-click opens the desk menu (background,
+  // rename, save, restore); a rename edits the chip in place. No dragging — a desk's
+  // number is load-bearing (see fillWorkspaces).
+  component DeskRow: Item {
+    id: drow
+
+    // "left", "center" or "right".
+    property string align: "center"
+
+    width: parent.width
+    height: Style.space(34)
+
+    Text {
+      id: dcap
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      width: root.rowCaptionWidth
+      text: "WORKSPACES"
+      textFormat: Text.PlainText
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      color: root.muted
+    }
+
+    Row {
+      id: chips
+      readonly property real room: drow.width - dcap.width
+      x: dcap.width + (drow.align === "right" ? room - width
+                       : drow.align === "center" ? (room - width) / 2 : 0)
+      y: Style.space(2)
+      spacing: Style.space(4)
+
+      Repeater {
+        model: lmW
+
+        delegate: Rectangle {
+          id: chip
+          required property var model
+          required property int index
+          readonly property bool editing: root.wsEditing === index
+
+          width: editing ? Style.space(150) : chipLabel.implicitWidth + Style.space(20)
+          height: Style.space(30)
+          radius: Style.cornerRadius
+          color: chip.model.focused
+            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+            : chipArea.containsMouse
+              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+
+          Behavior on color { ColorAnimation { duration: 80 } }
+
+          Text {
+            id: chipLabel
+            visible: !chip.editing
+            anchors.centerIn: parent
+            text: chip.model.name
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            color: root.foreground
+          }
+
+          TextField {
+            id: chipEdit
+            visible: chip.editing
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            color: root.foreground
+            onAccepted: { root.wsRename(chip.model.num, text); root.wsEditing = -1 }
+            Keys.onEscapePressed: root.wsEditing = -1
+          }
+
+          // The rename lands here from the menu: fill the field and hand it the keys.
+          // Only the row on screen answers — the other two slots hold hidden twins.
+          Connections {
+            target: root
+            function onWsEditingChanged() {
+              if (root.wsEditing !== chip.index || !drow.visible) return
+              chipEdit.text = chip.model.name
+              chipEdit.forceActiveFocus()
+              chipEdit.selectAll()
+            }
+          }
+
+          MouseArea {
+            id: chipArea
+            anchors.fill: parent
+            hoverEnabled: true
+            enabled: !chip.editing
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.wsFocus(chip.model.num)
+          }
+
+          TapHandler {
+            acceptedButtons: Qt.RightButton
+            enabled: !chip.editing
+            onTapped: root.openDeskMenu(chip.index, chip)
+          }
+        }
+      }
+    }
+  }
+
+  // One line of the menu: a glyph and a word, lit while the menu's cursor is on it
+  // (hover moves the cursor, the cursor paints — the panel kit's rule). An inert
+  // choice stays listed, dimmed, with a muted note saying why.
   component MenuChoice: CursorSurface {
     id: choice
 
     property string glyph: ""
     property string label: ""
+    property string note: ""
     property bool selected: false
 
     signal chosen()
@@ -1153,6 +1312,7 @@ Panel {
     foreground: root.foreground
     accent: root.accent
     hasCursor: selected
+    opacity: enabled ? 1 : 0.4
 
     Row {
       anchors.left: parent.left
@@ -1178,6 +1338,18 @@ Panel {
         font.pixelSize: Style.font.body
         color: root.foreground
       }
+    }
+
+    Text {
+      visible: choice.note !== ""
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      text: choice.note
+      textFormat: Text.PlainText
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      color: root.muted
     }
 
     MouseArea {
@@ -1717,31 +1889,37 @@ Panel {
           }
         }
 
-        // Icon-only mode's body: one row of tiles per icon lane, top to bottom in the
-        // lanes' on-screen order, then the desks at full width.
+        // Icon-only mode's body: three rows in the bar's own order — the strip's row
+        // where the mode puts it, the icon lanes in theirs — each placed as it sits on
+        // the bar, a rule between them. A slot lifts itself while its tile is dragged,
+        // so the tile paints over the rows below.
         Column {
           id: iconRows
           visible: root.bgPicking < 0 && root.iconsOnly
           width: parent.width
           spacing: 0
 
-          IconRow { id: rowL; lane: "L"; caption: "LEFT"; others: [rowC, rowR]; visible: root.mode !== "1" }
-          IconRow { id: rowC; lane: "C"; caption: "MIDDLE"; others: [rowL, rowR]; visible: root.mode !== "2" }
-          IconRow { id: rowR; lane: "R"; caption: "RIGHT"; others: [rowL, rowC]; visible: root.mode !== "3" }
-
-          Item { width: 1; height: Style.space(10) }
-
-          Text {
+          // Slot one: the strip in mode 1, otherwise the bar's left icons.
+          Item {
             width: parent.width
-            text: "WORKSPACES"
-            textFormat: Text.PlainText
-            horizontalAlignment: Text.AlignHCenter
-            topPadding: 0
-            bottomPadding: Style.space(8)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            color: root.muted
+            height: root.rowSlotHeight
+            z: rowL.dragging ? 5 : 0
+
+            IconRow {
+              id: rowL
+              lane: "L"
+              caption: "LEFT"
+              align: "left"
+              others: [rowC, rowR]
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode !== "1"
+            }
+
+            DeskRow {
+              align: "left"
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "1"
+            }
           }
 
           Rectangle {
@@ -1750,9 +1928,63 @@ Panel {
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
           }
 
-          Item { width: 1; height: Style.space(4) }
+          // Slot two: the strip in mode 2 (stock), otherwise the bar's centre icons.
+          Item {
+            width: parent.width
+            height: root.rowSlotHeight
+            z: rowC.dragging ? 5 : 0
 
-          DeskList { width: parent.width }
+            IconRow {
+              id: rowC
+              lane: "C"
+              caption: "MIDDLE"
+              align: "center"
+              others: [rowL, rowR]
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode !== "2"
+            }
+
+            DeskRow {
+              align: "center"
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "2"
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          }
+
+          // Slot three: the strip in mode 3, otherwise the bar's right icons.
+          Item {
+            width: parent.width
+            height: root.rowSlotHeight
+            z: rowR.dragging ? 5 : 0
+
+            IconRow {
+              id: rowR
+              lane: "R"
+              caption: "RIGHT"
+              align: "right"
+              others: [rowL, rowC]
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode !== "3"
+            }
+
+            DeskRow {
+              align: "right"
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.mode === "3"
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          }
         }
 
         // The full-panel background picker (Dave, 2026-09-01: "replace the entire
@@ -1975,8 +2207,9 @@ Panel {
           // Breathing room above, centred under the three columns (Dave, 2026-09-01).
           topPadding: Style.space(10)
           horizontalAlignment: Text.AlignHCenter
-          text: (root.iconsOnly ? "drag tiles, across rows too  ·  right-click hides / shows"
-                                : "drag rows, across too  ·  eye / x hides") + "  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
+          text: root.iconsOnly
+            ? "drag tiles, across rows too  ·  right-click: hide / show, or a desk's actions  ·  click a desk to go there  ·  Enter applies"
+            : "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
           textFormat: Text.PlainText
           elide: Text.ElideRight
           font.family: root.fontFamily
@@ -1992,7 +2225,7 @@ Panel {
       // else closes it.
       Popup {
         id: tileMenu
-        width: Style.space(190)
+        width: Style.space(220)
         padding: Style.space(4)
         modal: false
         dim: false
@@ -2032,22 +2265,20 @@ Panel {
 
           Item { width: 1; height: Style.space(3) }
 
-          MenuChoice {
-            glyph: root.menuHid ? root.iconEye : root.iconEyeSlash
-            label: root.menuHid ? "Show" : "Hide"
-            selected: root.menuCursor === 0
-            onHovered: root.menuCursor = 0
-            onChosen: root.menuChoose(0)
-          }
+          Repeater {
+            model: root.menuChoices
 
-          // Spacers only: deleted outright, as the x on a spacer row does.
-          MenuChoice {
-            visible: root.menuSpacer
-            glyph: root.iconX
-            label: "Delete"
-            selected: root.menuCursor === 1
-            onHovered: root.menuCursor = 1
-            onChosen: root.menuChoose(1)
+            delegate: MenuChoice {
+              required property var modelData
+              required property int index
+              glyph: modelData.glyph
+              label: modelData.label
+              note: modelData.note || ""
+              enabled: modelData.enabled !== false
+              selected: root.menuCursor === index
+              onHovered: root.menuCursor = index
+              onChosen: root.menuChoose(index)
+            }
           }
         }
       }

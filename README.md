@@ -4,12 +4,15 @@ Barbarian is a panel for the [Omarchy](https://omarchy.org) Quickshell bar: open
 with a keybind and reorder, re-lane or hide every widget on the bar's right side by
 dragging (or with `j`/`k` + `J`/`K`), and give each desk its own wallpaper.
 
-The grid button beside the tick and cross switches to **icon-only mode**: each lane
-becomes one horizontal row of the widgets' bar glyphs, no names. Drag a tile along
-its row to reorder, onto another row to change lanes; hover for the name; right-click
-for the menu that hides or shows it (and deletes a spacer). The keys turn with the
-layout — `h`/`l` walk a row, `j`/`k` hop rows, `H`/`L` carry, `J`/`K` throw. The
-choice is remembered in `~/.local/state/omarchy/barbarian.json`.
+The grid button beside the tick and cross switches to **icon-only mode**: three rows
+in the bar's own order, each placed as it sits on the bar — the left lane's glyphs at
+the left edge, the workspaces as chips in the middle, the right lane's glyphs at the
+right edge — and no names. Drag a tile along its row to reorder, onto another row to
+change lanes; hover for the name; right-click for the menu that hides or shows it
+(and deletes a spacer). Click a desk chip to go there; right-click it for background,
+rename, save and restore. The keys follow the layout — `h`/`l` walk a row, `j`/`k`
+hop rows, `H`/`L` carry, `J`/`K` throw. The choice is remembered in
+`~/.local/state/omarchy/barbarian.json`.
 
 It was built by a Claude Code agent on the author's machine, extracted from the
 machine-configuration repo it grew up in (51 commits of history carried over).
