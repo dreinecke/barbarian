@@ -23,6 +23,18 @@ import qs.Ui
 // hidden entry is parked in the sidecar with its settings, lane and position, never
 // deleted — and the bar hot-reloads.
 //
+// ICON-ONLY MODE since 2026-09-12 (Dave: a toggle "by the tick and cross" that shows
+// "the tray icon sections as a horizontal row of icons without the name"): each icon
+// lane becomes one full-width row of glyph tiles, the desks list sits beneath at full
+// width. Tiles drag along a row to reorder and onto another row to change lanes; a
+// right-click opens a small menu with the name and the hide/show (delete, for a
+// spacer) that the eye and x did in list mode; hovering shows the name. The keys
+// follow the layout: h/l walk a row, j/k hop rows, H/L carry, J/K throw. The
+// choice is a view preference, not a bar change — it is written to
+// ~/.local/state/omarchy/barbarian.json the moment it flips (shell.json would do, but
+// the shell watches that file and would rebuild the bar under the open panel), so it
+// survives Escape and the next opening.
+//
 // The widget itself draws NOTHING on the bar (zero width) — it exists so the shell loads
 // this panel and gives it an IPC target. HYPER+B toggles it (bindings.lua).
 Panel {
@@ -60,6 +72,24 @@ Panel {
   readonly property string iconSave: ""
   readonly property string iconImage: "󰥶"
   readonly property string iconRestore: ""
+
+  // The view toggle's glyph (Material Design's view-grid, the block the bar's own
+  // icons come from) — the button stays lit while icon-only mode is on.
+  readonly property string iconGrid: "󰕰"
+
+  // Icon-only mode (see the header). Restored from the state file on load, written
+  // there by setIconsOnly — never staged, never part of apply.
+  property bool iconsOnly: false
+  readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/barbarian.json"
+  // The tile menu (right-click in icon-only mode): which tile it is about, a snapshot of
+  // the row it was opened on, and which choice the keyboard cursor sits on.
+  property bool tileMenuOpen: false
+  property string menuLane: "R"
+  property int menuIndex: -1
+  property int menuCursor: 0
+  property string menuLabel: ""
+  property bool menuHid: false
+  property bool menuSpacer: false
 
   property string curLane: "R"
   property int cursor: 0
@@ -141,7 +171,9 @@ Panel {
       "omarchy.power": "Power",
       "omarchy.weather": "Weather",
       "omarchy.workspaces": "Workspaces",
-      "omarchy.spacer": "Spacer"
+      "omarchy.spacer": "Spacer",
+      "io.github.idarius.homeassistant": "Home Assistant",
+      "io.github.thisisgm.omapods": "AirPods"
     }
     if (known[wid] !== undefined) return known[wid]
     // Unknown ids fall back to their id's last segment, Title Cased like the rest —
@@ -152,9 +184,17 @@ Panel {
 
   // The glyph each widget wears on the bar (Dave, 2026-09-01: "🎧 Audio" not "Audio"),
   // same icon font the bar itself uses. Unknown ids get no glyph, and the fixed-width
-  // icon slot keeps the names aligned either way.
+  // icon slot keeps the names aligned either way. In icon-only mode a blank tile would
+  // be unusable, so an unknown id wears its monogram there (monogramFor) instead.
   function iconFor(wid) {
     var icons = {
+      "io.github.idarius.homeassistant": "󰟐",
+      "kokd.remote-desktop": "󰢹",
+      "io.github.kristoferlund.webcam": "󰄀",
+      "nixfred.blip": "󰭻",
+      "digitalfrost84.auto-dark-mode": "󰔎",
+      "tinkerbell.reptile": "󱔎",
+      "io.github.thisisgm.omapods": "󱡏",
       "omarchy.tray": "󰍜",
       "tinkerbell.tray": "󰍜",
       "tinkerbell.mail": "",
@@ -178,6 +218,59 @@ Panel {
       "omarchy.workspaces": ""
     }
     return icons[wid] || ""
+  }
+
+  // Up to two letters standing in for a missing glyph: the initials of a two-word
+  // name ("Remote Desktop" → RD), the first two letters of a one-word name.
+  function monogramFor(label) {
+    var words = String(label || "").split(/\s+/).filter(function(w) { return w !== "" })
+    if (words.length === 0) return "?"
+    if (words.length === 1) return words[0].slice(0, 2)
+    return (words[0].charAt(0) + words[1].charAt(0)).toUpperCase()
+  }
+
+  // Flip the view and persist it at once — a preference, not a staged change, so it
+  // does not dirty the panel and Escape cannot lose it.
+  function setIconsOnly(on) {
+    if (on === iconsOnly) return
+    iconsOnly = on
+    stateFile.setText(JSON.stringify({ view: on ? "icons" : "list" }, null, 2) + "\n")
+  }
+
+  function restoreView(raw) {
+    var state = {}
+    try { state = JSON.parse(String(raw || "{}")) } catch (e) { state = {} }
+    iconsOnly = state.view === "icons"
+  }
+
+  // The tile menu opens under the right-clicked tile with a snapshot of its row: the
+  // menu closes on every choice, so the snapshot cannot go stale.
+  function openTileMenu(lane, i, slotItem) {
+    var m = modelFor(lane)
+    if (i < 0 || i >= m.count) return
+    var r = m.get(i)
+    menuLane = lane
+    menuIndex = i
+    menuCursor = 0
+    menuLabel = r.label
+    menuHid = r.hid
+    menuSpacer = r.wid === "omarchy.spacer"
+    curLane = lane
+    cursor = i
+    var p = slotItem.mapToItem(keyCatcher, 0, slotItem.height)
+    tileMenu.x = Math.max(0, Math.min(p.x, keyCatcher.width - tileMenu.width))
+    tileMenu.y = p.y
+    tileMenu.open()
+  }
+
+  function menuChoose(i) {
+    if (i === 0) toggleHidden(menuLane, menuIndex)
+    else if (i === 1 && menuSpacer) removeSpacer(menuLane, menuIndex)
+    tileMenu.close()
+  }
+
+  function menuMove(delta) {
+    menuCursor = Math.max(0, Math.min(menuSpacer ? 1 : 0, menuCursor + delta))
   }
 
   // Whether a widget is ACTUALLY drawing anything on the bar right now — independent of
@@ -571,6 +664,19 @@ Panel {
     id: wsActProc
   }
 
+  // The view preference. Written whole on every flip; a missing file means list mode.
+  // Watched, so a flip made elsewhere (a second screen's panel, a hand edit) shows
+  // here without a shell restart.
+  FileView {
+    id: stateFile
+    path: root.statePath
+    printErrors: false
+    atomicWrites: true
+    watchChanges: true
+    onLoaded: root.restoreView(text())
+    onFileChanged: reload()
+  }
+
   // The row delegate both columns share. Drag within a column reorders live; drag past
   // the column gap and release, and the row lands in the other column at the drop spot.
   component LaneList: ListView {
@@ -819,6 +925,269 @@ Panel {
     }
   }
 
+  // Icon-only mode's row: the same lane model as a LaneList, laid out as one horizontal
+  // strip of glyph tiles behind a caption. Drag along the row reorders live; drag onto
+  // another row and release, and the tile changes lanes at the drop spot. Right-click
+  // opens the tile menu, hovering shows the name the tile no longer carries. A + tile
+  // at the end stages a spacer, like the "+ spacer" foot of a column.
+  component IconRow: Item {
+    id: irow
+
+    property string lane: "R"
+    property string caption: ""
+    // The other icon rows, for the cross-row drop test (their own `visible` says
+    // whether they are on screen in this mode).
+    property var others: []
+    readonly property Item strip: stripView
+
+    width: parent.width
+    height: Style.space(34)
+    // Rows are siblings: a tile dragged onto a later row would paint under it.
+    z: stripView.dragging ? 5 : 0
+
+    Text {
+      id: cap
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(64)
+      text: irow.caption
+      textFormat: Text.PlainText
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      color: root.muted
+    }
+
+    ListView {
+      id: stripView
+
+      property bool dragging: false
+      readonly property int slotWidth: Style.space(32)
+
+      anchors.left: cap.right
+      anchors.top: parent.top
+      orientation: ListView.Horizontal
+      // One empty slot beyond the last tile, always — room to drop at the end.
+      width: (count + 1) * slotWidth
+      height: irow.height
+      clip: false
+      interactive: false
+      spacing: 0
+      model: irow.lane === "L" ? lmL : irow.lane === "C" ? lmC : lmR
+
+      move: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+      moveDisplaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+      displaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+
+      delegate: Item {
+        id: slot
+        required property var model
+        required property int index
+        readonly property bool spacer: model.wid === "omarchy.spacer"
+
+        width: stripView.slotWidth
+        height: stripView.height
+        z: tileArea.drag.active ? 10 : 0
+
+        Rectangle {
+          id: tile
+          x: Style.space(2)
+          y: Style.space(2)
+          width: slot.width - Style.space(4)
+          height: slot.height - Style.space(4)
+          radius: Style.cornerRadius
+          color: tileArea.drag.active
+            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+            : (root.curLane === irow.lane && root.cursor === slot.index) || tileArea.containsMouse
+              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+          // A spacer has no glyph: its outline is what says "blank space here".
+          border.width: slot.spacer ? 1 : 0
+          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+
+          Behavior on color { ColorAnimation { duration: 80 } }
+
+          Text {
+            anchors.centerIn: parent
+            text: slot.spacer ? "" : slot.model.glyph !== "" ? slot.model.glyph
+                                                             : root.monogramFor(slot.model.label)
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
+            font.bold: slot.model.glyph === ""
+            color: root.foreground
+            // The glyph is the whole tile here, so it wears the label's full brightness;
+            // faded = drawing nothing right now, as in list mode.
+            opacity: slot.model.lit ? 1 : 0.25
+          }
+
+          // Parked off the bar: the slashed eye in the corner (the label's strikethrough
+          // has no label to live on in this mode).
+          Text {
+            visible: slot.model.hid
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: Style.space(1)
+            text: root.iconEyeSlash
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            color: root.foreground
+            opacity: 0.8
+          }
+        }
+
+        PanelToolTip {
+          visible: tileArea.containsMouse && !tileArea.drag.active && !root.tileMenuOpen
+          text: slot.model.label
+          fontFamily: root.fontFamily
+        }
+
+        // Left button only: the right button falls through to the TapHandler below, so a
+        // right-click can never start a drag.
+        MouseArea {
+          id: tileArea
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+          drag.target: tile
+          drag.axis: Drag.XAndYAxis
+          drag.onActiveChanged: stripView.dragging = drag.active
+
+          onContainsMouseChanged: if (containsMouse) { root.curLane = irow.lane; root.cursor = slot.index }
+          onPositionChanged: {
+            if (!drag.active) return
+            var c = tile.mapToItem(stripView, tile.width / 2, tile.height / 2)
+            if (c.y >= 0 && c.y <= stripView.height) {
+              // Still over the home row: live-reorder.
+              var centerX = tile.mapToItem(stripView.contentItem, tile.width / 2, 0).x
+              var to = Math.max(0, Math.min(stripView.count - 1,
+                                            Math.floor(centerX / stripView.slotWidth)))
+              if (to !== slot.index) root.moveItem(irow.lane, slot.index, to)
+            }
+          }
+          onReleased: {
+            stripView.dragging = false
+            // Dropped over another visible row? The tile changes lanes there.
+            for (var oi = 0; oi < irow.others.length; oi++) {
+              var other = irow.others[oi]
+              if (!other || !other.visible) continue
+              var o = tile.mapToItem(other.strip, tile.width / 2, tile.height / 2)
+              if (o.y >= -Style.space(6) && o.y <= other.strip.height + Style.space(6)) {
+                var at = Math.max(0, Math.min(other.strip.count,
+                                              Math.round(o.x / stripView.slotWidth)))
+                root.moveAcross(irow.lane, slot.index, other.lane, at)
+                break
+              }
+            }
+            tile.x = Style.space(2); tile.y = Style.space(2)
+          }
+          onCanceled: { stripView.dragging = false; tile.x = Style.space(2); tile.y = Style.space(2) }
+        }
+
+        TapHandler {
+          acceptedButtons: Qt.RightButton
+          onTapped: root.openTileMenu(irow.lane, slot.index, slot)
+        }
+      }
+    }
+
+    // The + tile: a spacer-shaped tile that stages a new spacer in this lane.
+    Item {
+      anchors.left: stripView.right
+      anchors.top: parent.top
+      width: stripView.slotWidth
+      height: irow.height
+
+      Rectangle {
+        x: Style.space(2)
+        y: Style.space(2)
+        width: parent.width - Style.space(4)
+        height: parent.height - Style.space(4)
+        radius: Style.cornerRadius
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                       addArea.containsMouse ? 0.10 : 0.04)
+
+        Text {
+          anchors.centerIn: parent
+          text: "+"
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          color: root.foreground
+          opacity: addArea.containsMouse ? 0.85 : 0.4
+        }
+      }
+
+      PanelToolTip {
+        visible: addArea.containsMouse
+        text: "Add a spacer"
+        fontFamily: root.fontFamily
+      }
+
+      MouseArea {
+        id: addArea
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.addSpacer(irow.lane)
+      }
+    }
+  }
+
+  // One line of the tile menu: a glyph and a word, lit while the menu's cursor is on
+  // it (hover moves the cursor, the cursor paints — the panel kit's rule).
+  component MenuChoice: CursorSurface {
+    id: choice
+
+    property string glyph: ""
+    property string label: ""
+    property bool selected: false
+
+    signal chosen()
+    signal hovered()
+
+    width: parent.width
+    implicitHeight: Style.space(30)
+    foreground: root.foreground
+    accent: root.accent
+    hasCursor: selected
+
+    Row {
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(8)
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: choice.glyph
+        textFormat: Text.PlainText
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        color: root.foreground
+        opacity: 0.7
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: choice.label
+        textFormat: Text.PlainText
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        color: root.foreground
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: choice.hovered()
+      onClicked: choice.chosen()
+    }
+  }
+
   // The desks column body — go, rename (SER8 only, the sync owns the MacBook's names),
   // save (HYPER+S) and restore (HYPER+R) per desk. Reusable in whichever slot the mode
   // puts it. No dragging here: a desk's NUMBER is load-bearing in four places
@@ -989,21 +1358,47 @@ Panel {
       anchors.fill: parent
       // While a desk is being renamed inline, every key belongs to the editor.
       blocked: root.wsEditing >= 0
-      // Escape CANCELS (nothing written); Enter and click-away APPLY. While the
-      // background picker is up, both just hand back to the columns.
-      onCloseRequested: if (root.bgPicking >= 0) root.bgPicking = -1; else root.cancelAndClose()
-      onActivateRequested: if (root.bgPicking >= 0) root.bgPicking = -1; else root.acceptAndClose()
+      // Escape CANCELS (nothing written); Enter and click-away APPLY. While the tile
+      // menu is up, Escape shuts it and Enter takes its choice; while the background
+      // picker is up, both just hand back to the columns.
+      onCloseRequested: {
+        if (root.tileMenuOpen) tileMenu.close()
+        else if (root.bgPicking >= 0) root.bgPicking = -1
+        else root.cancelAndClose()
+      }
+      onActivateRequested: {
+        if (root.tileMenuOpen) root.menuChoose(root.menuCursor)
+        else if (root.bgPicking >= 0) root.bgPicking = -1
+        else root.acceptAndClose()
+      }
       // x (PanelKeyCatcher's delete key) hides/shows the selected row.
-      onDeleteRequested: if (root.bgPicking < 0) root.toggleHidden(root.curLane, root.cursor)
-      // j/k (dy) walk a column, h/l (dx) hop between the two.
+      onDeleteRequested: if (root.bgPicking < 0 && !root.tileMenuOpen) root.toggleHidden(root.curLane, root.cursor)
+      // j/k (dy) walk a column, h/l (dx) hop between the two. In icon-only mode the
+      // keys follow the layout: h/l walk the row, j/k hop between rows. In the tile
+      // menu, j/k walk its choices.
       onMoveRequested: function(dx, dy) {
+        if (root.tileMenuOpen) { if (dy !== 0) root.menuMove(dy); return }
         if (root.bgPicking >= 0) return
+        if (root.iconsOnly) {
+          if (dx !== 0) root.moveCursor(dx)
+          if (dy !== 0) root.switchLane(dy)
+          return
+        }
         if (dy !== 0) root.moveCursor(dy)
         if (dx !== 0) root.switchLane(dx)
       }
-      // J/K carry the selected row up/down; H/L throw it to the other column.
+      // J/K carry the selected row up/down; H/L throw it to the other column. In
+      // icon-only mode H/L carry the tile along its row and J/K throw it to the row
+      // above or below.
       onTextKey: function(t) {
-        if (root.bgPicking >= 0) return
+        if (root.bgPicking >= 0 || root.tileMenuOpen) return
+        if (root.iconsOnly) {
+          if (t === "L") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
+          else if (t === "H") root.moveItem(root.curLane, root.cursor, root.cursor - 1)
+          else if (t === "J") root.throwAcross(1)
+          else if (t === "K") root.throwAcross(-1)
+          return
+        }
         if (t === "J") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
         else if (t === "K") root.moveItem(root.curLane, root.cursor, root.cursor - 1)
         else if (t === "H") root.throwAcross(-1)
@@ -1071,6 +1466,18 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
+
+            // The view toggle: lit (hover fill, accent glyph) while icon-only mode is on.
+            PanelActionButton {
+              iconText: root.iconGrid
+              tooltipText: root.iconsOnly ? "Show names" : "Icons only"
+              hasCursor: root.iconsOnly
+              foreground: root.foreground
+              hoverColor: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.iconSmall
+              onClicked: root.setIconsOnly(!root.iconsOnly)
+            }
 
             PanelActionButton {
               iconText: root.iconCheck
@@ -1170,7 +1577,7 @@ Panel {
 
         Row {
           id: laneRow
-          visible: root.bgPicking < 0
+          visible: root.bgPicking < 0 && !root.iconsOnly
           width: parent.width
           spacing: Style.space(14)
 
@@ -1307,6 +1714,44 @@ Panel {
 
             DeskList { width: parent.width; visible: root.mode === "3" }
           }
+        }
+
+        // Icon-only mode's body: one row of tiles per icon lane, top to bottom in the
+        // lanes' on-screen order, then the desks at full width.
+        Column {
+          id: iconRows
+          visible: root.bgPicking < 0 && root.iconsOnly
+          width: parent.width
+          spacing: 0
+
+          IconRow { id: rowL; lane: "L"; caption: "LEFT"; others: [rowC, rowR]; visible: root.mode !== "1" }
+          IconRow { id: rowC; lane: "C"; caption: "MIDDLE"; others: [rowL, rowR]; visible: root.mode !== "2" }
+          IconRow { id: rowR; lane: "R"; caption: "RIGHT"; others: [rowL, rowC]; visible: root.mode !== "3" }
+
+          Item { width: 1; height: Style.space(10) }
+
+          Text {
+            width: parent.width
+            text: "WORKSPACES"
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            topPadding: 0
+            bottomPadding: Style.space(8)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            color: root.muted
+          }
+
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          }
+
+          Item { width: 1; height: Style.space(4) }
+
+          DeskList { width: parent.width }
         }
 
         // The full-panel background picker (Dave, 2026-09-01: "replace the entire
@@ -1529,12 +1974,80 @@ Panel {
           // Breathing room above, centred under the three columns (Dave, 2026-09-01).
           topPadding: Style.space(10)
           horizontalAlignment: Text.AlignHCenter
-          text: "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
+          text: (root.iconsOnly ? "drag tiles, across rows too  ·  right-click hides / shows"
+                                : "drag rows, across too  ·  eye / x hides") + "  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
           textFormat: Text.PlainText
           elide: Text.ElideRight
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           color: root.muted
+        }
+      }
+
+      // The tile menu: the name, then the choices the eye and x offer in list mode. A
+      // plain Popup on the panel's own surface that takes no focus of its own — the key
+      // catcher above keeps the keyboard and routes Escape, j/k and Enter here while
+      // the menu is up, exactly as it does for the background picker. A press anywhere
+      // else closes it.
+      Popup {
+        id: tileMenu
+        width: Style.space(190)
+        padding: Style.space(4)
+        modal: false
+        dim: false
+        focus: false
+        closePolicy: Popup.CloseOnPressOutside
+        onOpenedChanged: root.tileMenuOpen = opened
+
+        background: BorderSurface {
+          color: Color.popups.background
+          borderSpec: Border.flat(Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35), 1)
+          radius: Style.cornerRadius
+        }
+
+        contentItem: Column {
+
+          // The name, since the tile does not carry it — the columns' heading style.
+          Text {
+            width: parent.width
+            leftPadding: Style.space(8)
+            rightPadding: Style.space(8)
+            topPadding: Style.space(5)
+            bottomPadding: Style.space(5)
+            text: root.menuLabel.toUpperCase()
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            color: root.muted
+          }
+
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          }
+
+          Item { width: 1; height: Style.space(3) }
+
+          MenuChoice {
+            glyph: root.menuHid ? root.iconEye : root.iconEyeSlash
+            label: root.menuHid ? "Show" : "Hide"
+            selected: root.menuCursor === 0
+            onHovered: root.menuCursor = 0
+            onChosen: root.menuChoose(0)
+          }
+
+          // Spacers only: deleted outright, as the x on a spacer row does.
+          MenuChoice {
+            visible: root.menuSpacer
+            glyph: root.iconX
+            label: "Delete"
+            selected: root.menuCursor === 1
+            onHovered: root.menuCursor = 1
+            onChosen: root.menuChoose(1)
+          }
         }
       }
     }
