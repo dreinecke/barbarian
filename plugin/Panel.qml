@@ -92,9 +92,12 @@ Panel {
   property int menuCursor: 0
   property string menuLabel: ""
   property var menuChoices: []
-  // Icon-only mode's rows share one caption column and one slot height.
-  readonly property int rowCaptionWidth: Style.space(84)
-  readonly property int rowSlotHeight: Style.space(42)
+  // Icon-only mode's rows: the tile height, the padding between a tile and the rules
+  // above and below it (Dave, 2026-09-12: triple the first cut's six), and so the
+  // height of a row between its rules.
+  readonly property int tileHeight: Style.space(30)
+  readonly property int rowPad: Style.space(18)
+  readonly property int rowSlotHeight: tileHeight + rowPad * 2
 
   property string curLane: "R"
   property int cursor: 0
@@ -348,12 +351,16 @@ Panel {
     if (lanes.indexOf(curLane) < 0) { curLane = lanes[0]; cursor = 0 }
     dirty = true
   }
-  // "+ spacer" (Dave, 2026-09-01): append a new spacer row to a lane, staged like any
-  // other change. Spacers are the one widget with fungible instances, so the apply
+  // "+ spacer" (Dave, 2026-09-01): add a new spacer row to a lane — at its end, or at
+  // `at` when given (the right lane's + tile sits at the lane's start) — staged like
+  // any other change. Spacers are the one widget with fungible instances, so the apply
   // script mints one when the bar has fewer than the panel asks for.
-  function addSpacer(lane) {
-    modelFor(lane).append({ wid: "omarchy.spacer", label: prettyName("omarchy.spacer"),
-                            glyph: iconFor("omarchy.spacer"), hid: false, lit: true })
+  function addSpacer(lane, at) {
+    var m = modelFor(lane)
+    var row = { wid: "omarchy.spacer", label: prettyName("omarchy.spacer"),
+                glyph: iconFor("omarchy.spacer"), hid: false, lit: true }
+    if (at === undefined) m.append(row)
+    else m.insert(Math.max(0, Math.min(m.count, at)), row)
     dirty = true
   }
 
@@ -958,18 +965,45 @@ Panel {
     }
   }
 
+  // A glyph centred on its ink rather than its line box: an icon font's glyphs sit
+  // anywhere in their em box, so centring the Text item leaves them visibly off (Dave,
+  // 2026-09-12: "pixel perfect visually centered vertically between the lines").
+  // TextMetrics measures the ink, and the position lands on whole pixels.
+  component InkGlyph: Item {
+    id: ink
+
+    property alias text: glyph.text
+    property alias font: glyph.font
+    property alias color: glyph.color
+
+    TextMetrics {
+      id: metrics
+      font: glyph.font
+      text: glyph.text
+    }
+
+    Text {
+      id: glyph
+      textFormat: Text.PlainText
+      x: Math.round(ink.width / 2 - (metrics.tightBoundingRect.x + metrics.tightBoundingRect.width / 2))
+      y: Math.round(ink.height / 2 - (glyph.baselineOffset + metrics.tightBoundingRect.y
+                                      + metrics.tightBoundingRect.height / 2))
+    }
+  }
+
   // Icon-only mode's lane row: the same lane model as a LaneList, laid out as one
-  // horizontal strip of glyph tiles beside a caption and placed as the lane sits on
-  // the bar — `align` puts the strip at the left edge, the centre or the right edge.
-  // Drag along the row reorders live; drag onto another row and release, and the tile
-  // changes lanes at the drop spot. Right-click opens the tile menu, hovering shows
-  // the name the tile no longer carries. A + tile at the end stages a spacer, like the
-  // "+ spacer" foot of a column.
+  // horizontal strip of glyph tiles placed as the lane sits on the bar — `align` puts
+  // the strip at the left edge, the centre or the right edge. Drag along the row
+  // reorders live; drag onto another row and release, and the tile changes lanes at
+  // the drop spot. Right-click opens the tile menu, hovering shows the name the tile
+  // no longer carries. The + tile that stages a spacer sits at the row's far end away
+  // from the strip — right for the left lane, left for the right lane (Dave,
+  // 2026-09-12) — and beside the strip when the strip is centred; the empty drop slot
+  // faces the same way as the + tile.
   component IconRow: Item {
     id: irow
 
     property string lane: "R"
-    property string caption: ""
     // "left", "center" or "right".
     property string align: "left"
     // The other icon rows, for the cross-row drop test (their own `visible` says
@@ -979,210 +1013,196 @@ Panel {
     readonly property bool dragging: stripView.dragging
 
     width: parent.width
-    height: Style.space(34)
+    height: root.rowSlotHeight
 
-    Text {
-      id: cap
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
-      width: root.rowCaptionWidth
-      text: irow.caption
-      textFormat: Text.PlainText
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-      color: root.muted
+    Component {
+      id: leadSlot
+      Item { width: stripView.slotWidth; height: stripView.height }
     }
 
-    // The strip and its + tile move as one block, placed by `align` in the room
-    // beside the caption.
-    Item {
-      id: block
-      readonly property real room: irow.width - cap.width
-      x: cap.width + (irow.align === "right" ? room - width
-                      : irow.align === "center" ? (room - width) / 2 : 0)
-      width: stripView.width + addTile.width
+    ListView {
+      id: stripView
+
+      property bool dragging: false
+      // Tiles squeeze together once a lane outgrows the row (a mode switch drains one
+      // lane into another), down to a floor that still holds the glyph; beyond about
+      // thirty tiles the row overflows.
+      readonly property int slotWidth: Math.max(Style.space(22), Math.min(Style.space(32),
+        Math.floor(irow.width / (count + 2))))
+
+      x: irow.align === "right" ? irow.width - width
+       : irow.align === "center" ? Math.round((irow.width - width - addTile.width) / 2) : 0
+      y: 0
+      orientation: ListView.Horizontal
+      // One empty slot beyond the last tile — before the first, on the right lane —
+      // always: room to drop something at that end, and an empty lane is still a target.
+      header: irow.align === "right" ? leadSlot : null
+      width: (count + 1) * slotWidth
       height: irow.height
+      clip: false
+      interactive: false
+      spacing: 0
+      model: irow.lane === "L" ? lmL : irow.lane === "C" ? lmC : lmR
 
-      ListView {
-        id: stripView
+      move: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+      moveDisplaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
+      displaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
 
-        property bool dragging: false
-        // Tiles squeeze together once a lane outgrows the room beside the caption (a
-        // mode switch drains one lane into another), down to a floor that still holds
-        // the glyph; beyond about thirty tiles the row overflows.
-        readonly property int slotWidth: Math.max(Style.space(22), Math.min(Style.space(32),
-          Math.floor(block.room / (count + 2))))
+      delegate: Item {
+        id: slot
+        required property var model
+        required property int index
+        readonly property bool spacer: model.wid === "omarchy.spacer"
 
-        anchors.left: parent.left
-        anchors.top: parent.top
-        orientation: ListView.Horizontal
-        // One empty slot beyond the last tile, always — room to drop at the end.
-        width: (count + 1) * slotWidth
-        height: irow.height
-        clip: false
-        interactive: false
-        spacing: 0
-        model: irow.lane === "L" ? lmL : irow.lane === "C" ? lmC : lmR
-
-        move: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-        moveDisplaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-        displaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-
-        delegate: Item {
-          id: slot
-          required property var model
-          required property int index
-          readonly property bool spacer: model.wid === "omarchy.spacer"
-
-          width: stripView.slotWidth
-          height: stripView.height
-          z: tileArea.drag.active ? 10 : 0
-
-          Rectangle {
-            id: tile
-            x: Style.space(2)
-            y: Style.space(2)
-            width: slot.width - Style.space(4)
-            height: slot.height - Style.space(4)
-            radius: Style.cornerRadius
-            color: tileArea.drag.active
-              ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-              : (root.curLane === irow.lane && root.cursor === slot.index) || tileArea.containsMouse
-                ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
-                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-            // A spacer has no glyph: its outline is what says "blank space here".
-            border.width: slot.spacer ? 1 : 0
-            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
-
-            Behavior on color { ColorAnimation { duration: 80 } }
-
-            Text {
-              anchors.centerIn: parent
-              text: slot.spacer ? "" : slot.model.glyph !== "" ? slot.model.glyph
-                                                               : root.monogramFor(slot.model.label)
-              textFormat: Text.PlainText
-              font.family: root.fontFamily
-              font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
-              font.bold: slot.model.glyph === ""
-              color: root.foreground
-              // The glyph is the whole tile here, so it wears the label's full brightness;
-              // faded = drawing nothing right now, as in list mode.
-              opacity: slot.model.lit ? 1 : 0.25
-            }
-
-            // Parked off the bar: the slashed eye in the corner (the label's strikethrough
-            // has no label to live on in this mode).
-            Text {
-              visible: slot.model.hid
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              anchors.margins: Style.space(1)
-              text: root.iconEyeSlash
-              textFormat: Text.PlainText
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              color: root.foreground
-              opacity: 0.8
-            }
-          }
-
-          PanelToolTip {
-            visible: tileArea.containsMouse && !tileArea.drag.active && !root.tileMenuOpen
-            text: slot.model.label
-            fontFamily: root.fontFamily
-          }
-
-          // Left button only: the right button falls through to the TapHandler below, so a
-          // right-click can never start a drag.
-          MouseArea {
-            id: tileArea
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-            drag.target: tile
-            drag.axis: Drag.XAndYAxis
-            drag.onActiveChanged: stripView.dragging = drag.active
-
-            onContainsMouseChanged: if (containsMouse) { root.curLane = irow.lane; root.cursor = slot.index }
-            onPositionChanged: {
-              if (!drag.active) return
-              var c = tile.mapToItem(stripView, tile.width / 2, tile.height / 2)
-              if (c.y >= 0 && c.y <= stripView.height) {
-                // Still over the home row: live-reorder.
-                var centerX = tile.mapToItem(stripView.contentItem, tile.width / 2, 0).x
-                var to = Math.max(0, Math.min(stripView.count - 1,
-                                              Math.floor(centerX / stripView.slotWidth)))
-                if (to !== slot.index) root.moveItem(irow.lane, slot.index, to)
-              }
-            }
-            onReleased: {
-              stripView.dragging = false
-              // Dropped over another visible row? The tile changes lanes there.
-              for (var oi = 0; oi < irow.others.length; oi++) {
-                var other = irow.others[oi]
-                if (!other || !other.visible) continue
-                var o = tile.mapToItem(other.strip, tile.width / 2, tile.height / 2)
-                if (o.y >= -Style.space(6) && o.y <= other.strip.height + Style.space(6)) {
-                  var at = Math.max(0, Math.min(other.strip.count,
-                                                Math.round(o.x / stripView.slotWidth)))
-                  root.moveAcross(irow.lane, slot.index, other.lane, at)
-                  break
-                }
-              }
-              tile.x = Style.space(2); tile.y = Style.space(2)
-            }
-            onCanceled: { stripView.dragging = false; tile.x = Style.space(2); tile.y = Style.space(2) }
-          }
-
-          TapHandler {
-            acceptedButtons: Qt.RightButton
-            onTapped: root.openTileMenu(irow.lane, slot.index, slot)
-          }
-        }
-      }
-
-      // The + tile: a spacer-shaped tile that stages a new spacer in this lane.
-      Item {
-        id: addTile
-        anchors.left: stripView.right
-        anchors.top: parent.top
         width: stripView.slotWidth
-        height: irow.height
+        height: stripView.height
+        z: tileArea.drag.active ? 10 : 0
 
+        // A spacer's tile is simply empty (Dave, 2026-09-12: no outline) — the hover
+        // name and the menu heading say what it is.
         Rectangle {
+          id: tile
           x: Style.space(2)
-          y: Style.space(2)
-          width: parent.width - Style.space(4)
-          height: parent.height - Style.space(4)
+          y: root.rowPad
+          width: slot.width - Style.space(4)
+          height: root.tileHeight
           radius: Style.cornerRadius
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
-                         addArea.containsMouse ? 0.10 : 0.04)
+          color: tileArea.drag.active
+            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+            : (root.curLane === irow.lane && root.cursor === slot.index) || tileArea.containsMouse
+              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
 
+          Behavior on color { ColorAnimation { duration: 80 } }
+
+          InkGlyph {
+            anchors.fill: parent
+            text: slot.spacer ? "" : slot.model.glyph !== "" ? slot.model.glyph
+                                                             : root.monogramFor(slot.model.label)
+            font.family: root.fontFamily
+            font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
+            font.bold: slot.model.glyph === ""
+            color: root.foreground
+            // The glyph is the whole tile here, so it wears the label's full brightness;
+            // faded = drawing nothing right now, as in list mode.
+            opacity: slot.model.lit ? 1 : 0.25
+          }
+
+          // Parked off the bar: the slashed eye in the corner (the label's strikethrough
+          // has no label to live on in this mode).
           Text {
-            anchors.centerIn: parent
-            text: "+"
+            visible: slot.model.hid
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: Style.space(1)
+            text: root.iconEyeSlash
             textFormat: Text.PlainText
             font.family: root.fontFamily
-            font.pixelSize: Style.font.title
+            font.pixelSize: Style.font.caption
             color: root.foreground
-            opacity: addArea.containsMouse ? 0.85 : 0.4
+            opacity: 0.8
           }
         }
 
         PanelToolTip {
-          visible: addArea.containsMouse
-          text: "Add a spacer"
+          visible: tileArea.containsMouse && !tileArea.drag.active && !root.tileMenuOpen
+          text: slot.model.label
           fontFamily: root.fontFamily
         }
 
+        // Left button only: the right button falls through to the TapHandler below, so a
+        // right-click can never start a drag.
         MouseArea {
-          id: addArea
+          id: tileArea
           anchors.fill: parent
           hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.addSpacer(irow.lane)
+          cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+          drag.target: tile
+          drag.axis: Drag.XAndYAxis
+          drag.onActiveChanged: stripView.dragging = drag.active
+
+          onContainsMouseChanged: if (containsMouse) { root.curLane = irow.lane; root.cursor = slot.index }
+          onPositionChanged: {
+            if (!drag.active) return
+            var c = tile.mapToItem(stripView, tile.width / 2, tile.height / 2)
+            if (c.y >= 0 && c.y <= stripView.height) {
+              // Still over the home row: live-reorder. The content item's x counts
+              // from the first tile whichever side the empty slot is on.
+              var centerX = tile.mapToItem(stripView.contentItem, tile.width / 2, 0).x
+              var to = Math.max(0, Math.min(stripView.count - 1,
+                                            Math.floor(centerX / stripView.slotWidth)))
+              if (to !== slot.index) root.moveItem(irow.lane, slot.index, to)
+            }
+          }
+          onReleased: {
+            stripView.dragging = false
+            // Dropped over another visible row? The tile changes lanes there, at the
+            // slot under it — measured in that row's own slot width.
+            for (var oi = 0; oi < irow.others.length; oi++) {
+              var other = irow.others[oi]
+              if (!other || !other.visible) continue
+              var o = tile.mapToItem(other.strip, tile.width / 2, tile.height / 2)
+              if (o.y >= -Style.space(6) && o.y <= other.strip.height + Style.space(6)) {
+                var ox = tile.mapToItem(other.strip.contentItem, tile.width / 2, 0).x
+                var at = Math.max(0, Math.min(other.strip.count,
+                                              Math.round(ox / other.strip.slotWidth)))
+                root.moveAcross(irow.lane, slot.index, other.lane, at)
+                break
+              }
+            }
+            tile.x = Style.space(2); tile.y = root.rowPad
+          }
+          onCanceled: { stripView.dragging = false; tile.x = Style.space(2); tile.y = root.rowPad }
         }
+
+        TapHandler {
+          acceptedButtons: Qt.RightButton
+          onTapped: root.openTileMenu(irow.lane, slot.index, slot)
+        }
+      }
+    }
+
+    // The + tile: a spacer-shaped tile that stages a new spacer in this lane, at the
+    // end the tile sits at.
+    Item {
+      id: addTile
+      x: irow.align === "right" ? 0
+       : irow.align === "left" ? irow.width - width : stripView.x + stripView.width
+      y: 0
+      width: stripView.slotWidth
+      height: irow.height
+
+      Rectangle {
+        x: Style.space(2)
+        y: root.rowPad
+        width: parent.width - Style.space(4)
+        height: root.tileHeight
+        radius: Style.cornerRadius
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                       addArea.containsMouse ? 0.10 : 0.04)
+
+        InkGlyph {
+          anchors.fill: parent
+          text: "+"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          color: root.foreground
+          opacity: addArea.containsMouse ? 0.85 : 0.4
+        }
+      }
+
+      PanelToolTip {
+        visible: addArea.containsMouse
+        text: "Add a spacer"
+        fontFamily: root.fontFamily
+      }
+
+      MouseArea {
+        id: addArea
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.addSpacer(irow.lane, irow.align === "right" ? 0 : undefined)
       }
     }
   }
@@ -1198,27 +1218,13 @@ Panel {
     property string align: "center"
 
     width: parent.width
-    height: Style.space(34)
-
-    Text {
-      id: dcap
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
-      width: root.rowCaptionWidth
-      text: "WORKSPACES"
-      textFormat: Text.PlainText
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-      color: root.muted
-    }
+    height: root.rowSlotHeight
 
     Row {
       id: chips
-      readonly property real room: drow.width - dcap.width
-      x: dcap.width + (drow.align === "right" ? room - width
-                       : drow.align === "center" ? (room - width) / 2 : 0)
-      y: Style.space(2)
+      x: drow.align === "right" ? drow.width - width
+       : drow.align === "center" ? Math.round((drow.width - width) / 2) : 0
+      y: root.rowPad
       spacing: Style.space(4)
 
       Repeater {
@@ -1231,7 +1237,7 @@ Panel {
           readonly property bool editing: root.wsEditing === index
 
           width: editing ? Style.space(150) : chipLabel.implicitWidth + Style.space(20)
-          height: Style.space(30)
+          height: root.tileHeight
           radius: Style.cornerRadius
           color: chip.model.focused
             ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
@@ -1241,10 +1247,21 @@ Panel {
 
           Behavior on color { ColorAnimation { duration: 80 } }
 
+          // Centred on the capital-letter band rather than the line box, so every name
+          // sits at the same height whatever its descenders, and a capital is centred
+          // between the rules like the glyphs beside it.
+          TextMetrics {
+            id: capBand
+            font: chipLabel.font
+            text: "H"
+          }
+
           Text {
             id: chipLabel
             visible: !chip.editing
-            anchors.centerIn: parent
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: Math.round(chip.height / 2 - (chipLabel.baselineOffset + capBand.tightBoundingRect.y
+                                             + capBand.tightBoundingRect.height / 2))
             text: chip.model.name
             textFormat: Text.PlainText
             font.family: root.fontFamily
@@ -1733,7 +1750,14 @@ Panel {
 
         Item { width: 1; height: Style.space(8) }
 
-        PanelSeparator { width: parent.width; foreground: root.accent; strength: 0.18 }
+        // Icon-only mode draws its own top rule inside its column, so the column's
+        // spacing cannot open a gap above the first row that the rows below lack.
+        PanelSeparator {
+          width: parent.width
+          foreground: root.accent
+          strength: 0.18
+          visible: !iconRows.visible
+        }
 
         Item {
           width: parent.width
@@ -1903,6 +1927,12 @@ Panel {
           width: parent.width
           spacing: 0
 
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          }
+
           // Slot one: the strip in mode 1, otherwise the bar's left icons.
           Item {
             width: parent.width
@@ -1912,7 +1942,6 @@ Panel {
             IconRow {
               id: rowL
               lane: "L"
-              caption: "LEFT"
               align: "left"
               others: [rowC, rowR]
               anchors.verticalCenter: parent.verticalCenter
@@ -1941,7 +1970,6 @@ Panel {
             IconRow {
               id: rowC
               lane: "C"
-              caption: "MIDDLE"
               align: "center"
               others: [rowL, rowR]
               anchors.verticalCenter: parent.verticalCenter
@@ -1970,7 +1998,6 @@ Panel {
             IconRow {
               id: rowR
               lane: "R"
-              caption: "RIGHT"
               align: "right"
               others: [rowL, rowC]
               anchors.verticalCenter: parent.verticalCenter
