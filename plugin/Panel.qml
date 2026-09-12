@@ -1008,7 +1008,11 @@ Panel {
         id: stripView
 
         property bool dragging: false
-        readonly property int slotWidth: Style.space(32)
+        // Tiles squeeze together once a lane outgrows the room beside the caption (a
+        // mode switch drains one lane into another), down to a floor that still holds
+        // the glyph; beyond about thirty tiles the row overflows.
+        readonly property int slotWidth: Math.max(Style.space(22), Math.min(Style.space(32),
+          Math.floor(block.room / (count + 2))))
 
         anchors.left: parent.left
         anchors.top: parent.top
