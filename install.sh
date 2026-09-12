@@ -10,7 +10,7 @@
 # Idempotent: re-running is the repair.
 #
 # 🛑 EVERY PLUGIN FILE GOES IN THROUGH `install_plugin_file`, NEVER `install` DIRECTLY.
-#    Writing a plugin file reloads the whole shell — Quickshell watches the plugins
+#    Writing a plugin file triggers a shell reload — Quickshell watches the plugins
 #    directory and rebuilds its entire QML root, lock service included — and a reload
 #    while the session is LOCKED aborts the shell (it recovers, the machine stays
 #    locked, but nothing unattended should do it). So: compare first and skip when
@@ -18,6 +18,8 @@
 #    Unreadable means locked — a wrong "locked" costs a few hours' delay; a wrong
 #    "unlocked" costs the crash. The full history of these rules lives in the
 #    machine repo this was extracted from (dreinecke/enterprise, private).
+#    This reload may reuse cached QML. After installing code changes, a full
+#    `omarchy restart shell` while unlocked is required to activate them reliably.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ID="tinkerbell.arrange"
@@ -47,6 +49,8 @@ install_plugin_file() { # <mode> <repo file> <live file>
 }
 
 install_plugin_file m644 "$HERE/plugin/manifest.json"         "$PLUGIN_DIR/manifest.json"
+install_plugin_file m644 "$HERE/plugin/ReorderController.qml" "$PLUGIN_DIR/ReorderController.qml"
+install_plugin_file m644 "$HERE/plugin/ReorderRow.qml"        "$PLUGIN_DIR/ReorderRow.qml"
 install_plugin_file m644 "$HERE/plugin/Panel.qml"             "$PLUGIN_DIR/Panel.qml"
 install_plugin_file m755 "$HERE/plugin/bin/bar-arrange-apply" "$PLUGIN_DIR/bin/bar-arrange-apply"
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-pick"        "$PLUGIN_DIR/bin/ws-bg-pick"
@@ -60,6 +64,7 @@ if [ "$DEFERRED" -gt 0 ]; then
   echo "barbarian: $DEFERRED file(s) deferred — session locked or unreadable; re-run unlocked"
 else
   echo "barbarian: installed to $PLUGIN_DIR and $ENGINE_DST"
+  echo "barbarian: restart the shell while unlocked to load code changes: omarchy restart shell"
 fi
 
 # post-commit hook (not tracked by git): on the machine that owns the mirror ships,

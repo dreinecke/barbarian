@@ -5,6 +5,7 @@ import Quickshell.Io
 import Quickshell.Widgets
 import qs.Commons
 import qs.Ui
+import "." as Reordering
 
 // Arrange: reorder, hide and re-lane the bar's widgets from a panel, because dragging
 // the real bar icons in place would mean reaching into the shell's private layout code
@@ -96,6 +97,7 @@ Panel {
   property int menuCursor: 0
   property string menuLabel: ""
   property var menuChoices: []
+  property point menuAnchor: Qt.point(0, 0)
   // Icon-only mode's rows: the tile height, the padding between a tile and the rules
   // above and below it (Dave, 2026-09-12: triple the first cut's six), and so the
   // height of a row between its rules.
@@ -245,6 +247,7 @@ Panel {
   // does not dirty the panel and Escape cannot lose it.
   function setIconsOnly(on) {
     if (on === iconsOnly) return
+    iconDrag.reset()
     iconsOnly = on
     stateFile.setText(JSON.stringify({ view: on ? "icons" : "list" }, null, 2) + "\n")
   }
@@ -252,6 +255,7 @@ Panel {
   function restoreView(raw) {
     var state = {}
     try { state = JSON.parse(String(raw || "{}")) } catch (e) { state = {} }
+    if (iconsOnly !== (state.view === "icons")) iconDrag.reset()
     iconsOnly = state.view === "icons"
   }
 
@@ -262,14 +266,28 @@ Panel {
     menuLabel = label
     menuChoices = choices
     menuCursor = 0
-    var p = anchorItem.mapToItem(keyCatcher, 0, anchorItem.height)
-    tileMenu.x = Math.max(0, Math.min(p.x, keyCatcher.width - tileMenu.width))
-    tileMenu.y = p.y
+    menuAnchor = anchorItem.mapToItem(keyCatcher, 0, anchorItem.height)
     tileMenu.open()
   }
 
+  function iconRowName(lane) {
+    return lane === "L" ? "top row" : lane === "C" ? "middle row" : "bottom row"
+  }
+
+  function focusIconCursor() {
+    if (!opened || !iconsOnly || tileMenuOpen || wsEditing >= 0 || bgPicking >= 0 || iconDrag.busy) return
+    var row = curLane === "L" ? rowL : curLane === "C" ? rowC : rowR
+    var tile = row.itemAt(cursor)
+    if (tile) tile.forceActiveFocus(Qt.OtherFocusReason)
+  }
+
+  onCursorChanged: Qt.callLater(focusIconCursor)
+  onCurLaneChanged: Qt.callLater(focusIconCursor)
+
   // A tile's menu: the eye's hide/show and, for a spacer, the x's delete.
   function openTileMenu(lane, i, slotItem) {
+    if (iconDrag.active) return
+    iconDrag.reset()
     var m = modelFor(lane)
     if (i < 0 || i >= m.count) return
     var r = m.get(i)
@@ -277,6 +295,15 @@ Panel {
     cursor = i
     var choices = [{ glyph: r.hid ? iconEye : iconEyeSlash, label: r.hid ? "Show" : "Hide",
                      enabled: true, act: function() { toggleHidden(lane, i) } }]
+    choices.push({ glyph: "\u2190", label: "Move left", enabled: i > 0,
+                   act: function() { moveItem(lane, i, i - 1) } })
+    choices.push({ glyph: "\u2192", label: "Move right", enabled: i + 1 < m.count,
+                   act: function() { moveItem(lane, i, i + 1) } })
+    var lanes = laneOrder()
+    var otherLane = lanes[0] === lane ? lanes[1] : lanes[0]
+    choices.push({ glyph: lanes.indexOf(otherLane) < lanes.indexOf(lane) ? "\u2191" : "\u2193",
+                   label: "Move to " + iconRowName(otherLane), enabled: true,
+                   act: function() { moveAcross(lane, i, otherLane, i) } })
     if (r.wid === "omarchy.spacer")
       choices.push({ glyph: iconX, label: "Delete", enabled: true,
                      act: function() { removeSpacer(lane, i) } })
@@ -304,12 +331,15 @@ Panel {
 
   function menuChoose(i) {
     var choice = menuChoices[i]
+    if (!choice || !choice.enabled) return
     tileMenu.close()
-    if (choice && choice.enabled) choice.act()
+    choice.act()
   }
 
   function menuMove(delta) {
-    menuCursor = Math.max(0, Math.min(menuChoices.length - 1, menuCursor + delta))
+    var next = menuCursor + delta
+    while (next >= 0 && next < menuChoices.length && menuChoices[next].enabled === false) next += delta
+    if (next >= 0 && next < menuChoices.length) menuCursor = next
   }
 
   // Whether a widget is ACTUALLY drawing anything on the bar right now — independent of
@@ -347,6 +377,7 @@ Panel {
   // its neighbour so no icon is stranded in an invisible lane.
   function setMode(m) {
     if (m === mode) return
+    iconDrag.reset()
     if (m === "1") drainLane(lmL, lmC)
     else if (m === "2") drainLane(lmC, lmL)
     else if (m === "3") drainLane(lmR, lmC)
@@ -589,6 +620,7 @@ Panel {
     for (var li = 0; li < lanes.length; li++)
       if (modelFor(lanes[li]).count > 0) { curLane = lanes[li]; break }
     cursor = 0
+    Qt.callLater(focusIconCursor)
   }
 
   // Hiding also PARKS the row at its lane's far end, so a lane's hidden widgets sit
@@ -614,6 +646,8 @@ Panel {
     m.move(from, to, 1)
     if (curLane === lane) cursor = to
     dirty = true
+    if (iconsOnly) keyCatcher.Accessible.announce(m.get(to).label + ", " + iconRowName(lane)
+      + ", position " + (to + 1) + " of " + m.count, Accessible.Polite)
   }
 
   // A row changes lanes whole: removed from one column, inserted into the other at the
@@ -630,6 +664,8 @@ Panel {
     curLane = toLane
     cursor = at
     dirty = true
+    if (iconsOnly) keyCatcher.Accessible.announce(row.label + ", " + iconRowName(toLane)
+      + ", position " + (at + 1) + " of " + m2.count, Accessible.Polite)
   }
 
   function moveCursor(delta) {
@@ -680,6 +716,7 @@ Panel {
   function cancelAndClose() { cancelled = true; close() }
 
   onOpenedChanged: {
+    iconDrag.reset()
     if (opened) {
       dirty = false
       cancelled = false
@@ -1004,179 +1041,120 @@ Panel {
     }
   }
 
-  // Icon-only mode's lane row: the same lane model as a LaneList, laid out as one
-  // horizontal strip of glyph tiles placed as the lane sits on the bar — `align` puts
-  // the strip at the left edge, the centre or the right edge. Drag along the row
-  // reorders live; drag onto another row and release, and the tile changes lanes at
-  // the drop spot. Right-click opens the tile menu, hovering shows the name the tile
-  // no longer carries. The + tile that stages a spacer sits at the row's far end away
-  // from the strip — right for the left lane, left for the right lane (Dave,
-  // 2026-09-12) — and beside the strip when the strip is centred; the empty drop slot
-  // faces the same way as the + tile.
-  component IconRow: Item {
+  component IconTile: Rectangle {
+    required property var entry
+    property bool highlighted: false
+    property bool lifted: false
+
+    radius: Style.cornerRadius
+    color: lifted
+      ? Qt.tint(Color.background, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18))
+      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, highlighted ? 0.10 : 0.04)
+    border.width: lifted ? Math.max(1, Style.space(1)) : 0
+    border.color: root.accent
+
+    InkGlyph {
+      anchors.fill: parent
+      text: entry.wid === "omarchy.spacer" ? "" : entry.glyph || root.monogramFor(entry.label)
+      font.family: root.fontFamily
+      font.pixelSize: entry.glyph ? Style.font.title : Style.font.caption
+      font.bold: !entry.glyph
+      color: entry.hid ? root.urgent : root.foreground
+      opacity: lifted ? 1 : entry.hid || !entry.lit ? 0.45 : 1
+    }
+  }
+
+  component IconRow: Reordering.ReorderRow {
     id: irow
 
-    property string lane: "R"
-    // "left", "center" or "right".
-    property string align: "left"
-    // The other icon rows, for the cross-row drop test (their own `visible` says
-    // whether they are on screen in this mode).
-    property var others: []
-    readonly property Item strip: stripView
-    readonly property bool dragging: stripView.dragging
-
+    property alias align: irow.alignment
+    controller: iconDrag
+    model: lane === "L" ? lmL : lane === "C" ? lmC : lmR
     width: parent.width
-    height: root.rowSlotHeight
+    maximumSlotWidth: Style.space(32)
+    minimumSlotWidth: Style.space(22)
+    tileInset: Style.space(2)
+    tileHeight: root.tileHeight
+    verticalPadding: root.rowPad
+    hysteresis: Style.space(3)
 
-    Component {
-      id: leadSlot
-      Item { width: stripView.slotWidth; height: stripView.height }
+    onSelected: function(index) {
+      if (iconDrag.busy) return
+      root.curLane = lane
+      root.cursor = index
+    }
+    onMenuRequested: function(index, anchor) { root.openTileMenu(lane, index, anchor) }
+
+    Rectangle {
+      id: dropIndicator
+      visible: irow.receiving && (iconDrag.sourceRow !== irow || iconDrag.sourceIndex !== iconDrag.targetIndex)
+      x: irow.startFor(irow.previewCount) + iconDrag.targetIndex * irow.slotWidth + irow.tileInset
+      y: root.rowPad + root.tileHeight + Style.space(4)
+      width: irow.slotWidth - 2 * irow.tileInset
+      height: Math.max(1, Style.space(2))
+      radius: height / 2
+      color: root.accent
+      border.width: 0
+      Accessible.ignored: true
     }
 
-    ListView {
-      id: stripView
+    delegate: IconTile {
+      id: tile
+      required property var model
+      required property int index
+      property bool ready: false
+      entry: model
+      x: irow.itemX(index)
+      y: root.rowPad
+      width: irow.slotWidth - 2 * irow.tileInset
+      height: root.tileHeight
+      opacity: irow.isLifted(index) ? 0 : 1
+      highlighted: root.curLane === irow.lane && root.cursor === index
+      Component.onCompleted: ready = true
 
-      property bool dragging: false
-      // Tiles squeeze together once a lane outgrows the row (a mode switch drains one
-      // lane into another), down to a floor that still holds the glyph; beyond about
-      // thirty tiles the row overflows.
-      readonly property int slotWidth: Math.max(Style.space(22), Math.min(Style.space(32),
-        Math.floor(irow.width / (count + 2))))
+      Behavior on x {
+        enabled: tile.ready && !irow.isLifted(tile.index)
+        NumberAnimation { duration: iconDrag.motionDuration; easing.type: Easing.OutCubic }
+      }
+      Behavior on width {
+        enabled: tile.ready
+        NumberAnimation { duration: iconDrag.motionDuration; easing.type: Easing.OutCubic }
+      }
 
-      x: irow.align === "right" ? irow.width - width
-       : irow.align === "center" ? Math.round((irow.width - width - addTile.width) / 2) : 0
-      y: 0
-      orientation: ListView.Horizontal
-      // One empty slot beyond the last tile — before the first, on the right lane —
-      // always: room to drop something at that end, and an empty lane is still a target.
-      header: irow.align === "right" ? leadSlot : null
-      width: (count + 1) * slotWidth
-      height: irow.height
-      clip: false
-      interactive: false
-      spacing: 0
-      model: irow.lane === "L" ? lmL : irow.lane === "C" ? lmC : lmR
+      Accessible.role: Accessible.Button
+      Accessible.name: model.label + (model.hid ? ", hidden" : "") + ", "
+        + root.iconRowName(irow.lane) + ", " + (index + 1) + " of " + irow.count
+      Accessible.description: "Reorder with H and L, move between rows with J and K. Press F10 for options."
+      Accessible.focusable: true
+      Accessible.onPressAction: root.openTileMenu(irow.lane, index, tile)
 
-      move: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-      moveDisplaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-      displaced: Transition { NumberAnimation { properties: "x"; duration: 110 } }
-
-      delegate: Item {
-        id: slot
-        required property var model
-        required property int index
-        readonly property bool spacer: model.wid === "omarchy.spacer"
-
-        width: stripView.slotWidth
-        height: stripView.height
-        z: tileArea.drag.active ? 10 : 0
-
-        // A spacer's tile is simply empty (Dave, 2026-09-12: no outline) — the hover
-        // name and the menu heading say what it is.
-        Rectangle {
-          id: tile
-          x: Style.space(2)
-          y: root.rowPad
-          width: slot.width - Style.space(4)
-          height: root.tileHeight
-          radius: Style.cornerRadius
-          color: tileArea.drag.active
-            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-            : (root.curLane === irow.lane && root.cursor === slot.index) || tileArea.containsMouse
-              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
-              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-
-          Behavior on color { ColorAnimation { duration: 80 } }
-
-          InkGlyph {
-            anchors.fill: parent
-            text: slot.spacer ? "" : slot.model.glyph !== "" ? slot.model.glyph
-                                                             : root.monogramFor(slot.model.label)
-            font.family: root.fontFamily
-            font.pixelSize: slot.model.glyph !== "" ? Style.font.title : Style.font.caption
-            font.bold: slot.model.glyph === ""
-            // Parked off the bar: the urgent colour, and no badge in the corner — the
-            // colour says it on its own (Dave, 2026-09-12).
-            color: slot.model.hid ? root.urgent : root.foreground
-            // One faded level for both of the quiet states, so the colour is the only
-            // difference between them (Dave, the same day): parked, or on the bar and
-            // drawing nothing right now.
-            opacity: slot.model.hid || !slot.model.lit ? 0.45 : 1
-          }
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_F10 || event.key === Qt.Key_Menu) {
+          root.openTileMenu(irow.lane, index, tile)
+          event.accepted = true
         }
+      }
 
-        PanelToolTip {
-          visible: tileArea.containsMouse && !tileArea.drag.active && !root.tileMenuOpen
-          text: slot.model.label
-          fontFamily: root.fontFamily
-        }
-
-        // Left button only: the right button falls through to the TapHandler below, so a
-        // right-click can never start a drag.
-        MouseArea {
-          id: tileArea
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-          drag.target: tile
-          drag.axis: Drag.XAndYAxis
-          drag.onActiveChanged: stripView.dragging = drag.active
-
-          onContainsMouseChanged: if (containsMouse) { root.curLane = irow.lane; root.cursor = slot.index }
-          onPositionChanged: {
-            if (!drag.active) return
-            var c = tile.mapToItem(stripView, tile.width / 2, tile.height / 2)
-            if (c.y >= 0 && c.y <= stripView.height) {
-              // Still over the home row: live-reorder. The content item's x counts
-              // from the first tile whichever side the empty slot is on.
-              var centerX = tile.mapToItem(stripView.contentItem, tile.width / 2, 0).x
-              var to = Math.max(0, Math.min(stripView.count - 1,
-                                            Math.floor(centerX / stripView.slotWidth)))
-              if (to !== slot.index) root.moveItem(irow.lane, slot.index, to)
-            }
-          }
-          onReleased: {
-            stripView.dragging = false
-            // Dropped over another visible row? The tile changes lanes there, at the
-            // slot under it — measured in that row's own slot width.
-            for (var oi = 0; oi < irow.others.length; oi++) {
-              var other = irow.others[oi]
-              if (!other || !other.visible) continue
-              var o = tile.mapToItem(other.strip, tile.width / 2, tile.height / 2)
-              if (o.y >= -Style.space(6) && o.y <= other.strip.height + Style.space(6)) {
-                var ox = tile.mapToItem(other.strip.contentItem, tile.width / 2, 0).x
-                var at = Math.max(0, Math.min(other.strip.count,
-                                              Math.round(ox / other.strip.slotWidth)))
-                root.moveAcross(irow.lane, slot.index, other.lane, at)
-                break
-              }
-            }
-            tile.x = Style.space(2); tile.y = root.rowPad
-          }
-          onCanceled: { stripView.dragging = false; tile.x = Style.space(2); tile.y = root.rowPad }
-        }
-
-        TapHandler {
-          acceptedButtons: Qt.RightButton
-          onTapped: root.openTileMenu(irow.lane, slot.index, slot)
-        }
+      PanelToolTip {
+        visible: irow.hoveredIndex === tile.index && !iconDrag.busy && !root.tileMenuOpen
+        text: tile.model.label
+        fontFamily: root.fontFamily
       }
     }
 
-    // The + tile: a spacer-shaped tile that stages a new spacer in this lane, at the
-    // end the tile sits at.
     Item {
       id: addTile
+      z: 2
       x: irow.align === "right" ? 0
-       : irow.align === "left" ? irow.width - width : stripView.x + stripView.width
-      y: 0
-      width: stripView.slotWidth
+       : irow.align === "left" ? irow.width - width
+       : irow.startFor(irow.previewCount) + (irow.previewCount + 1) * irow.slotWidth
+      width: irow.slotWidth
       height: irow.height
 
       Rectangle {
-        x: Style.space(2)
+        x: irow.tileInset
         y: root.rowPad
-        width: parent.width - Style.space(4)
+        width: parent.width - 2 * irow.tileInset
         height: root.tileHeight
         radius: Style.cornerRadius
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
@@ -1193,7 +1171,7 @@ Panel {
       }
 
       PanelToolTip {
-        visible: addArea.containsMouse
+        visible: addArea.containsMouse && !iconDrag.busy
         text: "Add a spacer"
         fontFamily: root.fontFamily
       }
@@ -1201,6 +1179,7 @@ Panel {
       MouseArea {
         id: addArea
         anchors.fill: parent
+        enabled: !iconDrag.busy
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.addSpacer(irow.lane, irow.align === "right" ? 0 : undefined)
@@ -1335,6 +1314,13 @@ Panel {
     accent: root.accent
     hasCursor: selected
     opacity: enabled ? 1 : 0.4
+    focus: root.tileMenuOpen && selected
+    Keys.forwardTo: [keyCatcher]
+    Accessible.role: Accessible.MenuItem
+    Accessible.name: label
+    Accessible.description: note
+    Accessible.onPressAction: if (enabled) chosen()
+    onSelectedChanged: if (selected && root.tileMenuOpen) forceActiveFocus(Qt.OtherFocusReason)
 
     Row {
       anchors.left: parent.left
@@ -1557,21 +1543,24 @@ Panel {
       // menu is up, Escape shuts it and Enter takes its choice; while the background
       // picker is up, both just hand back to the columns.
       onCloseRequested: {
-        if (root.tileMenuOpen) tileMenu.close()
+        if (iconDrag.active) iconDrag.cancel()
+        else if (root.tileMenuOpen) tileMenu.close()
         else if (root.bgPicking >= 0) root.bgPicking = -1
         else root.cancelAndClose()
       }
       onActivateRequested: {
+        if (iconDrag.busy) return
         if (root.tileMenuOpen) root.menuChoose(root.menuCursor)
         else if (root.bgPicking >= 0) root.bgPicking = -1
         else root.acceptAndClose()
       }
       // x (PanelKeyCatcher's delete key) hides/shows the selected row.
-      onDeleteRequested: if (root.bgPicking < 0 && !root.tileMenuOpen) root.toggleHidden(root.curLane, root.cursor)
+      onDeleteRequested: if (root.bgPicking < 0 && !root.tileMenuOpen && !iconDrag.busy) root.toggleHidden(root.curLane, root.cursor)
       // j/k (dy) walk a column, h/l (dx) hop between the two. In icon-only mode the
       // keys follow the layout: h/l walk the row, j/k hop between rows. In the tile
       // menu, j/k walk its choices.
       onMoveRequested: function(dx, dy) {
+        if (iconDrag.busy) return
         if (root.tileMenuOpen) { if (dy !== 0) root.menuMove(dy); return }
         if (root.bgPicking >= 0) return
         if (root.iconsOnly) {
@@ -1586,6 +1575,7 @@ Panel {
       // icon-only mode H/L carry the tile along its row and J/K throw it to the row
       // above or below.
       onTextKey: function(t) {
+        if (iconDrag.busy) return
         if (root.bgPicking >= 0 || root.tileMenuOpen) return
         if (root.iconsOnly) {
           if (t === "L") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
@@ -1598,6 +1588,32 @@ Panel {
         else if (t === "K") root.moveItem(root.curLane, root.cursor, root.cursor - 1)
         else if (t === "H") root.throwAcross(-1)
         else if (t === "L") root.throwAcross(1)
+      }
+
+      Reordering.ReorderController {
+        id: iconDrag
+        anchors.fill: parent
+        z: 10
+        enabled: root.opened && root.iconsOnly && root.bgPicking < 0
+        rows: [rowL, rowC, rowR]
+        motionDuration: root.setting("reduce-motion", false) ? 0 : 160
+        onDropped: function(fromRow, fromIndex, toRow, toIndex) {
+          if (fromRow === toRow) root.moveItem(fromRow.lane, fromIndex, toIndex)
+          else root.moveAcross(fromRow.lane, fromIndex, toRow.lane, toIndex)
+        }
+        onDragCancelled: keyCatcher.Accessible.announce("Drag cancelled", Accessible.Polite)
+        onBusyChanged: if (!busy) Qt.callLater(root.focusIconCursor)
+
+        IconTile {
+          entry: iconDrag.entry
+          visible: iconDrag.busy
+          x: iconDrag.previewX
+          y: iconDrag.previewY
+          width: iconDrag.previewWidth
+          height: iconDrag.previewHeight
+          lifted: true
+          Accessible.ignored: true
+        }
       }
 
       Column {
@@ -1920,8 +1936,7 @@ Panel {
 
         // Icon-only mode's body: three rows in the bar's own order — the strip's row
         // where the mode puts it, the icon lanes in theirs — each placed as it sits on
-        // the bar, a rule between them. A slot lifts itself while its tile is dragged,
-        // so the tile paints over the rows below.
+        // the bar, a rule between them. The shared overlay carries a dragged tile.
         Column {
           id: iconRows
           visible: root.bgPicking < 0 && root.iconsOnly
@@ -1938,13 +1953,11 @@ Panel {
           Item {
             width: parent.width
             height: root.rowSlotHeight
-            z: rowL.dragging ? 5 : 0
 
             IconRow {
               id: rowL
               lane: "L"
               align: "left"
-              others: [rowC, rowR]
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode !== "1"
             }
@@ -1966,13 +1979,11 @@ Panel {
           Item {
             width: parent.width
             height: root.rowSlotHeight
-            z: rowC.dragging ? 5 : 0
 
             IconRow {
               id: rowC
               lane: "C"
               align: "center"
-              others: [rowL, rowR]
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode !== "2"
             }
@@ -1994,13 +2005,11 @@ Panel {
           Item {
             width: parent.width
             height: root.rowSlotHeight
-            z: rowR.dragging ? 5 : 0
 
             IconRow {
               id: rowR
               lane: "R"
               align: "right"
-              others: [rowL, rowC]
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode !== "3"
             }
@@ -2234,36 +2243,58 @@ Panel {
         }
 
         Text {
+          id: idleIconHelp
+          visible: false
+          width: parent.width
+          topPadding: Style.space(10)
+          text: "Drag to rearrange  ·  Right-click or F10 for options  ·  H/L reorder, J/K move between rows\nClick a desk to go there  ·  Enter applies  ·  Esc discards changes"
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          font: arrangementHelp.font
+          Accessible.ignored: true
+        }
+
+        Text {
+          id: arrangementHelp
           visible: root.bgPicking < 0
           width: parent.width
+          height: root.iconsOnly ? idleIconHelp.implicitHeight : implicitHeight
           // Breathing room above, centred under the three columns (Dave, 2026-09-01).
           topPadding: Style.space(10)
           horizontalAlignment: Text.AlignHCenter
           text: root.iconsOnly
-            ? "drag tiles, across rows too  ·  right-click: hide / show, or a desk's actions  ·  click a desk to go there  ·  Enter applies"
+            ? iconDrag.active
+              ? "Release to place  ·  Esc cancels this drag"
+              : idleIconHelp.text
             : "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
           textFormat: Text.PlainText
-          elide: Text.ElideRight
+          wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          color: root.muted
+          color: root.iconsOnly ? root.foreground : root.muted
         }
       }
 
       // The tile menu: the name, then the choices the eye and x offer in list mode. A
-      // plain Popup on the panel's own surface that takes no focus of its own — the key
-      // catcher above keeps the keyboard and routes Escape, j/k and Enter here while
-      // the menu is up, exactly as it does for the background picker. A press anywhere
-      // else closes it.
+      // The menu keeps focus on its selected action and forwards navigation to the
+      // panel key dispatcher. A press outside closes it and restores tile focus.
       Popup {
         id: tileMenu
+        x: Math.max(0, Math.min(root.menuAnchor.x, keyCatcher.width - width))
+        y: Math.max(0, Math.min(root.menuAnchor.y, keyCatcher.height - height))
         width: Style.space(220)
         padding: Style.space(4)
         modal: false
         dim: false
-        focus: false
+        focus: true
         closePolicy: Popup.CloseOnPressOutside
-        onOpenedChanged: root.tileMenuOpen = opened
+        onOpenedChanged: {
+          root.tileMenuOpen = opened
+          if (opened) {
+            var choice = menuItems.itemAt(root.menuCursor)
+            if (choice) choice.forceActiveFocus(Qt.OtherFocusReason)
+          } else Qt.callLater(root.focusIconCursor)
+        }
 
         background: BorderSurface {
           color: Color.popups.background
@@ -2286,7 +2317,7 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             font.bold: true
-            color: root.muted
+            color: root.foreground
           }
 
           Rectangle {
@@ -2298,6 +2329,7 @@ Panel {
           Item { width: 1; height: Style.space(3) }
 
           Repeater {
+            id: menuItems
             model: root.menuChoices
 
             delegate: MenuChoice {
