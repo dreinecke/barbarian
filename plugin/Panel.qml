@@ -17,7 +17,8 @@ import qs.Ui
 // lands when the row is dropped) — or nudged with keys: j/k walk, h/l switch column,
 // J/K carry the row, H/L throw it to the other column. The eye button (or `x`) hides a
 // row (Dave, 2026-09-01: Bluetooth is "noise/clutter 99% of the time but occasionally I
-// want" it back). Files are written ONCE, when the panel closes (Enter, click-away) —
+// want" it back), and parks it at its lane's far end so the hidden ones sit together
+// (see toggleHidden). Files are written ONCE, when the panel closes (Enter, click-away) —
 // Escape throws the changes away. The write goes through bin/bar-arrange-apply, which
 // moves whole entries so per-widget settings (the clock's formats) travel untouched — a
 // hidden entry is parked in the sidecar with its settings, lane and position, never
@@ -590,6 +591,12 @@ Panel {
     cursor = 0
   }
 
+  // Hiding also PARKS the row at its lane's far end, so a lane's hidden widgets sit
+  // together instead of leaving gaps through the run (Dave, 2026-09-12): the end of the
+  // queue for the left lane (and the centre one, which has no outer edge), the start of
+  // it for the right lane — either way the end away from the screen edge that lane hugs.
+  // Showing one again leaves it where it is, in among the hidden, until it is dragged or
+  // carried out.
   function toggleHidden(lane, i) {
     var m = modelFor(lane)
     if (i < 0 || i >= m.count) return
@@ -598,6 +605,7 @@ Panel {
     // Optimistic: an un-parked widget lights up (it only actually draws after apply).
     m.setProperty(i, "lit", !nowHid)
     dirty = true
+    if (nowHid) moveItem(lane, i, lane === "R" ? 0 : m.count - 1)
   }
 
   function moveItem(lane, from, to) {

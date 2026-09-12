@@ -9,7 +9,8 @@ in the bar's own order, each placed as it sits on the bar — the left lane's gl
 the left edge, the workspaces as chips in the middle, the right lane's glyphs at the
 right edge — and no names. Drag a tile along its row to reorder, onto another row to
 change lanes; hover for the name; right-click for the menu that hides or shows it
-(and deletes a spacer). A widget parked off the bar wears the theme's urgent colour. Click a desk chip to go there; right-click it for background,
+(and deletes a spacer). A widget parked off the bar wears the theme's urgent colour,
+and hiding one sends it to its lane's far end so the hidden ones sit together. Click a desk chip to go there; right-click it for background,
 rename, save and restore. The keys follow the layout — `h`/`l` walk a row, `j`/`k`
 hop rows, `H`/`L` carry, `J`/`K` throw. The choice is remembered in
 `~/.local/state/omarchy/barbarian.json`.
