@@ -34,7 +34,7 @@ import qs.Ui
 // for a spacer) that the eye and x did in list mode; hovering shows the name. A desk
 // chip goes to the desk on click and offers the desk row's buttons on right-click
 // (background, rename in place, save, restore). A tile parked off the bar wears the
-// theme's urgent colour at the same 50% as a widget drawing nothing — the colour is
+// theme's urgent colour at the same 45% as a widget drawing nothing — the colour is
 // the whole signal, with no badge on the corner. The keys follow the layout: h/l walk
 // a row, j/k hop rows, H/L carry, J/K throw. The
 // choice is a view preference, not a bar change — it is written to
@@ -809,11 +809,12 @@ Panel {
             textFormat: Text.PlainText
             font.family: root.fontFamily
             font.pixelSize: Style.font.title
-            // Dave's second mock-editor pass (2026-09-01): foreground at 55%, dim 50%
-            // (25% until 2026-09-12); headings and helper wear muted, the rules accent
-            // at 18%.
+            // Dave's second mock-editor pass (2026-09-01), retuned on 2026-09-12 so the
+            // two states have room between them: this icon at 60% when the widget is
+            // drawing, 45% when it is not (25% until that day). The eye and x buttons
+            // keep the old 55%; headings and helper wear muted, the rules accent at 18%.
             color: root.foreground
-            opacity: wrap.model.lit ? 0.55 : 0.5
+            opacity: wrap.model.lit ? 0.6 : 0.45
           }
         }
 
@@ -830,7 +831,7 @@ Panel {
           font.pixelSize: Style.font.body
           font.strikeout: wrap.model.hid        // crossed = our setting says hide
           color: root.foreground
-          opacity: wrap.model.lit ? 1 : 0.5     // faded = drawing nothing right now
+          opacity: wrap.model.lit ? 1 : 0.45    // faded = drawing nothing right now
         }
 
         // Spacers only: an x that deletes the row outright (hide would just park it).
@@ -1100,7 +1101,7 @@ Panel {
             // One faded level for both of the quiet states, so the colour is the only
             // difference between them (Dave, the same day): parked, or on the bar and
             // drawing nothing right now.
-            opacity: slot.model.hid || !slot.model.lit ? 0.5 : 1
+            opacity: slot.model.hid || !slot.model.lit ? 0.45 : 1
           }
         }
 
