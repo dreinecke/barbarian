@@ -539,6 +539,7 @@ Panel {
     }
     wsEditing = -1
     bgPicking = -1
+    tileMenu.close()
     spacerDeletes = 0
     var lanes = laneOrder()
     curLane = lanes[0]
