@@ -1142,38 +1142,50 @@ Panel {
       }
     }
 
+    // A labelled chip rather than a one-slot tile (Dave, 2026-09-12: "make the spacer
+    // (+) say (Add spacer) instead"), sized to its words like a desk chip and parked at
+    // the row's far end. It is wider than a slot, so a lane of more than about twenty
+    // tiles will reach it — the tiles squeeze first, and the chip paints on top.
     Item {
       id: addTile
       z: 2
       x: irow.align === "right" ? 0
        : irow.align === "left" ? irow.width - width
        : irow.startFor(irow.previewCount) + (irow.previewCount + 1) * irow.slotWidth
-      width: irow.slotWidth
+      width: addChip.width + 2 * irow.tileInset
       height: irow.height
 
       Rectangle {
+        id: addChip
         x: irow.tileInset
         y: root.rowPad
-        width: parent.width - 2 * irow.tileInset
+        width: addLabel.implicitWidth + Style.space(20)
         height: root.tileHeight
         radius: Style.cornerRadius
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
                        addArea.containsMouse ? 0.10 : 0.04)
 
-        InkGlyph {
-          anchors.fill: parent
-          text: "+"
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          color: root.foreground
-          opacity: addArea.containsMouse ? 0.85 : 0.4
-        }
-      }
+        Behavior on color { ColorAnimation { duration: 80 } }
 
-      PanelToolTip {
-        visible: addArea.containsMouse && !iconDrag.busy
-        text: "Add spacer"
-        fontFamily: root.fontFamily
+        // Centred on the capital band, like the desk chips beside it in the middle row.
+        TextMetrics {
+          id: addCapBand
+          font: addLabel.font
+          text: "H"
+        }
+
+        Text {
+          id: addLabel
+          anchors.horizontalCenter: parent.horizontalCenter
+          y: Math.round(addChip.height / 2 - (addLabel.baselineOffset + addCapBand.tightBoundingRect.y
+                                              + addCapBand.tightBoundingRect.height / 2))
+          text: "+  Add spacer"
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          color: root.foreground
+          opacity: addArea.containsMouse ? 0.9 : 0.45
+        }
       }
 
       MouseArea {
