@@ -35,7 +35,7 @@ import "." as Reordering
 // for a spacer) that the eye and x did in list mode; hovering shows the name. A desk
 // chip goes to the desk on click and offers the desk row's buttons on right-click
 // (background, rename in place, save, restore). A tile parked off the bar wears the
-// theme's urgent colour at the same 45% as a widget drawing nothing — the colour is
+// theme's urgent colour at the same 55% as a widget drawing nothing — the colour is
 // the whole signal, with no badge on the corner. The keys follow the layout: h/l walk
 // a row, j/k hop rows, H/L carry, J/K throw. The
 // choice is a view preference, not a bar change — it is written to
@@ -848,10 +848,10 @@ Panel {
             font.pixelSize: Style.font.title
             // Dave's second mock-editor pass (2026-09-01), retuned on 2026-09-12 so the
             // two states have room between them: this icon at 60% when the widget is
-            // drawing, 45% when it is not (25% until that day). The eye and x buttons
+            // drawing, 55% when it is not (25% until that day). The eye and x buttons
             // keep the old 55%; headings and helper wear muted, the rules accent at 18%.
             color: root.foreground
-            opacity: wrap.model.lit ? 0.6 : 0.45
+            opacity: wrap.model.lit ? 0.6 : 0.55
           }
         }
 
@@ -868,7 +868,7 @@ Panel {
           font.pixelSize: Style.font.body
           font.strikeout: wrap.model.hid        // crossed = our setting says hide
           color: root.foreground
-          opacity: wrap.model.lit ? 1 : 0.45    // faded = drawing nothing right now
+          opacity: wrap.model.lit ? 1 : 0.55    // faded = drawing nothing right now
         }
 
         // Spacers only: an x that deletes the row outright (hide would just park it).
@@ -997,7 +997,7 @@ Panel {
         anchors.left: addGlyphSlot.right
         anchors.leftMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        text: "Spacer"
+        text: "Add spacer"
         textFormat: Text.PlainText
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
@@ -1060,7 +1060,7 @@ Panel {
       font.pixelSize: entry.glyph ? Style.font.title : Style.font.caption
       font.bold: !entry.glyph
       color: entry.hid ? root.urgent : root.foreground
-      opacity: lifted ? 1 : entry.hid || !entry.lit ? 0.45 : 1
+      opacity: lifted ? 1 : entry.hid || !entry.lit ? 0.55 : 1
     }
   }
 
@@ -1172,7 +1172,7 @@ Panel {
 
       PanelToolTip {
         visible: addArea.containsMouse && !iconDrag.busy
-        text: "Add a spacer"
+        text: "Add spacer"
         fontFamily: root.fontFamily
       }
 
