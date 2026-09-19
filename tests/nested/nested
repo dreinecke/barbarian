@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# nested — run Barbarian against a second Hyprland, nested and out of sight, never the session
+# in use. What the unit tests cannot reach (change_id, config reloads, what the bar makes of
+# them, the panel's keys and drags) was checked this way on 2026-09-19.
+#
+#   nested start              a nested Hyprland in a window on hidden workspace 51, with a
+#                             headless output BARBTEST (1600x1400) that renders on its own
+#   nested windows            four test terminals, placed by the config's window rules
+#   nested panel              Barbarian's panel on BARBTEST, in its own Quickshell, with a
+#                             throwaway HOME (so applying never touches the real shell.json)
+#   nested ipc toggle         the panel's IPC (open / close)
+#   nested key <wtype args>   type into the nested Hyprland (wtype -k Escape, wtype -M ctrl z …)
+#   nested pointer <cmds>     move / glide / down / up / rdown / rup / sleep (see vptr.py);
+#                             positions are pixels on BARBTEST
+#   nested shot <file.png>    screenshot BARBTEST
+#   nested hypr <args>        hyprctl against the nested Hyprland
+#   nested renumber <args>    bin/ws-renumber against the nested Hyprland and the test HOME
+#   nested stop               end both, and remove the nested instance's runtime folder
+#
+# ⚠️ SCRIPTS THAT FIND HYPRLAND BY `ls -t $XDG_RUNTIME_DIR/hypr | head -1` WOULD PICK THE NESTED
+# ONE — the newest — while it runs (claude-watchdog, workspace-goto, workspace-edit do). `start`
+# dates the nested folder back to 2020 so they keep finding the real session.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN="$(cd "$HERE/../../plugin" && pwd)"
+WORK="${XDG_RUNTIME_DIR:?}/barbarian-nested"
+SIG_FILE="$WORK/sig"
+TEST_HOME="$WORK/home"
+LAYOUT_W=2880 LAYOUT_H=1400   # BARBTEST at 0,0 plus WAYLAND-1 at 1600,0
+
+nested_sig() { cat "$SIG_FILE" 2>/dev/null || { echo "nested: not started" >&2; exit 1; }; }
+nested_env() {
+  export HYPRLAND_INSTANCE_SIGNATURE="$(nested_sig)" WAYLAND_DISPLAY="$(cat "$WORK/display")"
+}
+
+case "${1:-}" in
+  start)
+    mkdir -p "$WORK"
+    cp "$HERE/hyprland.lua" "$WORK/hyprland.lua"
+    before="$(ls "$XDG_RUNTIME_DIR/hypr")"
+    displays="$(ls "$XDG_RUNTIME_DIR" | grep -E '^wayland-[0-9]+$' || true)"
+    hyprctl dispatch "hl.dsp.exec_cmd(\"Hyprland -c $WORK/hyprland.lua\", { workspace = \"51 silent\" })" >/dev/null
+    for _ in $(seq 40); do
+      sleep 0.25
+      sig="$(ls "$XDG_RUNTIME_DIR/hypr" | grep -vxF "$before" | head -1 || true)"
+      [ -n "$sig" ] && [ -S "$XDG_RUNTIME_DIR/hypr/$sig/.socket.sock" ] && break
+    done
+    [ -n "${sig:-}" ] || { echo "nested: Hyprland did not start" >&2; exit 1; }
+    sleep 1
+    touch -d 2020-01-01 "$XDG_RUNTIME_DIR/hypr/$sig"
+    echo "$sig" > "$SIG_FILE"
+    ls "$XDG_RUNTIME_DIR" | grep -E '^wayland-[0-9]+$' | grep -vxF "$displays" | head -1 > "$WORK/display"
+    HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl output create headless BARBTEST >/dev/null
+    HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl reload >/dev/null
+    echo "nested: $sig on $(cat "$WORK/display")"
+    ;;
+  windows)
+    nested_env
+    for class in t-web t-per t-tink t-tink; do
+      hyprctl dispatch "hl.dsp.exec_cmd(\"foot --app-id $class -e sleep 3600\")" >/dev/null
+      sleep 0.4
+    done
+    ;;
+  panel)
+    nested_env
+    mkdir -p "$TEST_HOME/.config/omarchy/hooks/workspaces-renumbered.d" "$TEST_HOME/.local/state/omarchy" \
+             "$WORK/config"
+    cp "$HOME/.config/omarchy/shell.json" "$TEST_HOME/.config/omarchy/shell.json"
+    [ -f "$HOME/.config/omarchy/bar-hidden.json" ] && cp "$HOME/.config/omarchy/bar-hidden.json" "$TEST_HOME/.config/omarchy/"
+    # Read-only: the theme's colours and backgrounds. Nothing in the test writes under it.
+    ln -sfn "$HOME/.local/state/omarchy/current" "$TEST_HOME/.local/state/omarchy/current"
+    printf '#!/usr/bin/env bash\nNESTED_CONFIG=%q exec %q "$@"\n' "$WORK/hyprland.lua" "$HERE/hook-rewrite-desks" \
+      > "$TEST_HOME/.config/omarchy/hooks/workspaces-renumbered.d/nested-desks"
+    chmod +x "$TEST_HOME/.config/omarchy/hooks/workspaces-renumbered.d/nested-desks"
+    ln -sfn /usr/share/omarchy/shell/Commons "$WORK/config/Commons"
+    ln -sfn /usr/share/omarchy/shell/Ui "$WORK/config/Ui"
+    ln -sfn "$PLUGIN" "$WORK/config/barbarian"
+    cp "$HERE/shell.qml" "$WORK/config/shell.qml"
+    HOME="$TEST_HOME" setsid qs -p "$WORK/config/shell.qml" > "$WORK/panel.log" 2>&1 &
+    sleep 3
+    echo "nested: panel running, log $WORK/panel.log"
+    ;;
+  ipc)
+    nested_env; shift
+    HOME="$TEST_HOME" exec timeout 10 qs -p "$WORK/config/shell.qml" ipc call tinkerbell.arrange "$@"
+    ;;
+  key)
+    nested_env; shift
+    exec wtype "$@"
+    ;;
+  pointer)
+    nested_env; shift
+    exec python3 "$HERE/vptr.py" "$LAYOUT_W" "$LAYOUT_H" "$@"
+    ;;
+  shot)
+    nested_env
+    exec timeout 10 grim -o BARBTEST "${2:?nested shot <file.png>}"
+    ;;
+  hypr)
+    nested_env; shift
+    exec hyprctl "$@"
+    ;;
+  renumber)
+    nested_env; shift
+    HOME="$TEST_HOME" WS_RENUMBER_HOOKS="$TEST_HOME/.config/omarchy/hooks" exec "$PLUGIN/bin/ws-renumber" "$@"
+    ;;
+  stop)
+    pid="$(qs list --all 2>/dev/null | awk -v cfg="$WORK/config/shell.qml" '/Process ID:/{p=$3} $0 ~ "Config path: " cfg {print p}')"
+    [ -n "$pid" ] && kill "$pid"
+    if sig="$(cat "$SIG_FILE" 2>/dev/null)"; then
+      HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl dispatch 'hl.dsp.exit()' >/dev/null 2>&1 || true
+      sleep 1.5
+      [ "$sig" != "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && rm -rf "${XDG_RUNTIME_DIR:?}/hypr/$sig"
+    fi
+    rm -rf "$WORK"
+    ;;
+  *)
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

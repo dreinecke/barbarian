@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# The test's workspaces-renumbered hook: rewrites the nested Hyprland's desk table the way a
+# machine's own hook would rewrite its config (move:OLD:NEW / delete:OLD:NEW arguments).
+python3 - "$NESTED_CONFIG" "$@" <<'PY'
+import re, sys
+path, specs = sys.argv[1], sys.argv[2:]
+text = open(path).read()
+moves, deletes = {}, set()
+for spec in specs:
+    kind, old, new = spec.split(":")
+    if kind == "move":
+        moves[old] = new
+    else:
+        deletes.add(old)
+rows = sorted((int(moves.get(n, n)), name)
+              for n, name in re.findall(r'  \{ id = "(\d+)", name = "([^"]*)" \},\n', text) if n not in deletes)
+table = "".join(f'  {{ id = "{n}", name = "{name}" }},\n' for n, name in rows)
+text = re.sub(r'(local desks = \{\n)(.*?)(^\}$)', lambda m: m.group(1) + table + m.group(3), text,
+              flags=re.S | re.M)
+open(path, "w").write(text)
+PY

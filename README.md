@@ -107,8 +107,10 @@ python3 tests/test_ws_renumber.py
 ```
 
 The second covers the desk renumbering's arithmetic and the files it moves. Its live half —
-renumbering, reloading, renaming — was checked against a second Hyprland running nested on a
-hidden workspace, never the session in use.
+renumbering, reloading, renaming, and the panel's keys and drags — runs against a second
+Hyprland nested on a hidden workspace, never the session in use: `tests/nested/nested` starts
+it, puts the panel on it with a throwaway HOME, types and points into it, and screenshots it
+(its header lists the steps).
 
 ## License
 
