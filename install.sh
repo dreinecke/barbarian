@@ -56,6 +56,9 @@ install_plugin_file m755 "$HERE/plugin/bin/bar-arrange-apply" "$PLUGIN_DIR/bin/b
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-pick"        "$PLUGIN_DIR/bin/ws-bg-pick"
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-add"         "$PLUGIN_DIR/bin/ws-bg-add"
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-remove"      "$PLUGIN_DIR/bin/ws-bg-remove"
+install_plugin_file m755 "$HERE/plugin/bin/ws-bg-restore"     "$PLUGIN_DIR/bin/ws-bg-restore"
+install_plugin_file m755 "$HERE/plugin/bin/ws-renumber"       "$PLUGIN_DIR/bin/ws-renumber"
+install_plugin_file m755 "$HERE/plugin/bin/barbarian-stash"   "$PLUGIN_DIR/bin/barbarian-stash"
 install_plugin_file m755 "$HERE/engine/per-workspace-wallpaper.sh" "$ENGINE_DST"
 
 # The engine is normally started by a user service or a theme-set hook on the host

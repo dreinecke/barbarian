@@ -34,7 +34,7 @@ import "." as Reordering
 // lanes; a right-click opens a small menu with the name and the hide/show (delete,
 // for a spacer) that the eye and x did in list mode; hovering shows the name. A desk
 // chip goes to the desk on click and offers the desk row's buttons on right-click
-// (background, rename in place, save, restore). A tile parked off the bar wears the
+// (background, rename in place, save, restore, move, delete). A tile parked off the bar wears the
 // theme's urgent colour at the same 55% as a widget drawing nothing — the colour is
 // the whole signal, with no badge on the corner. The keys follow the layout: h/l walk
 // a row, j/k hop rows, H/L carry, J/K throw. The
@@ -42,6 +42,15 @@ import "." as Reordering
 // ~/.local/state/omarchy/barbarian.json the moment it flips (shell.json would do, but
 // the shell watches that file and would rebuild the bar under the open panel), so it
 // survives Escape and the next opening.
+//
+// DESKS since 2026-09-19 (Dave: delete a workspace "through the usual method either right
+// click context menu or an action icon depending on the view", reorder them "in the same way
+// that it allows you to reorder bar icons", and "ctrl-z to undo the last change you made to
+// anything"): desk chips and desk rows drag to reorder, a desk is deleted from its menu or the
+// list's bin button after an "are you sure", and both are staged like every bar change.
+// bin/ws-renumber applies them — see its header for why each desk is renumbered in place and
+// what moves with it. Ctrl+Z / Ctrl+Shift+Z undo and redo everything done while the panel is
+// open; the history ends when it closes.
 //
 // The widget itself draws NOTHING on the bar (zero width) — it exists so the shell loads
 // this panel and gives it an IPC target. HYPER+B toggles it (bindings.lua).
@@ -59,6 +68,13 @@ Panel {
     Qt.resolvedUrl("bin/ws-bg-add").toString().replace(/^file:\/\//, "")
   readonly property string removeScript:
     Qt.resolvedUrl("bin/ws-bg-remove").toString().replace(/^file:\/\//, "")
+  readonly property string restoreBgScript:
+    Qt.resolvedUrl("bin/ws-bg-restore").toString().replace(/^file:\/\//, "")
+  readonly property string renumberScript:
+    Qt.resolvedUrl("bin/ws-renumber").toString().replace(/^file:\/\//, "")
+  readonly property string stashScript:
+    Qt.resolvedUrl("bin/barbarian-stash").toString().replace(/^file:\/\//, "")
+  readonly property string snapDir: Quickshell.env("HOME") + "/.config/omarchy/workspace-layout/snapshots"
   // Dave's own background images live under here (ws-bg-add copies into it); only these get
   // the × — a theme's shipped images belong to the omarchy package.
   readonly property string userBgDir: Quickshell.env("HOME") + "/.config/omarchy/backgrounds/"
@@ -81,6 +97,7 @@ Panel {
   readonly property string iconSave: ""
   readonly property string iconImage: "󰥶"
   readonly property string iconRestore: ""
+  readonly property string iconTrash: "\uF1F8"
 
   // The view toggle's glyph (Material Design's view-grid, the block the bar's own
   // icons come from) — the button stays lit while icon-only mode is on.
@@ -134,6 +151,34 @@ Panel {
   property int spacerDeletes: 0
   // Solid-colour choices for the picker: black plus the current theme's palette.
   property var bgSolids: []
+
+  // Desks (Dave, 2026-09-19: delete one, reorder them "in the same way that it allows you to
+  // reorder bar icons"). Staged like every bar change and applied on close by bin/ws-renumber,
+  // which renumbers the desks in place and moves everything keyed by a desk's number with it.
+  // deskSlots: the desks' numbers when the panel opened, smallest first — the Nth desk in the
+  // staged order takes the Nth of them. deskMerges: desk number → the desk its windows move to,
+  // for each desk deleted this session. canEditDesks: false where the machine's config pins desks
+  // to numbers and nothing is installed to renumber it (see fillWorkspaces).
+  property var deskSlots: []
+  property var deskMerges: ({})
+  property bool canEditDesks: false
+
+  // Undo (Dave, 2026-09-19: "ctrl-z to undo the last change you made to anything"). One history
+  // for the open panel, oldest first. A staged change is undone by putting back a snapshot of
+  // everything staged (captureStaged); a change that happened at once — a rename, a background, a
+  // saved layout — by an action that reverses it. Going to a desk and restoring a layout are not
+  // changes and are not recorded. changeDepth > 0 while one user action is under way, so the
+  // steps it is made of (a hide that also moves the row, a drag that crosses several rows) undo
+  // as one.
+  property var undoStack: []
+  property var redoStack: []
+  property int changeDepth: 0
+  property string undoNote: ""
+
+  // The "are you sure" card before a desk is deleted.
+  property bool confirmOpen: false
+  property string confirmMessage: ""
+  property var confirmAction: null
 
   // The hero's subtitle: one bar pun per opening, cycling through the lot. The pool
   // is Dave-curated (2026-09-01, a 58-strong long-list cut to these survivors).
@@ -248,6 +293,7 @@ Panel {
   function setIconsOnly(on) {
     if (on === iconsOnly) return
     iconDrag.reset()
+    deskDrag.reset()
     iconsOnly = on
     stateFile.setText(JSON.stringify({ view: on ? "icons" : "list" }, null, 2) + "\n")
   }
@@ -255,8 +301,168 @@ Panel {
   function restoreView(raw) {
     var state = {}
     try { state = JSON.parse(String(raw || "{}")) } catch (e) { state = {} }
-    if (iconsOnly !== (state.view === "icons")) iconDrag.reset()
+    if (iconsOnly !== (state.view === "icons")) { iconDrag.reset(); deskDrag.reset() }
     iconsOnly = state.view === "icons"
+  }
+
+  // ── undo ────────────────────────────────────────────────────────────────────────
+
+  function rowsOf(model) {
+    var rows = []
+    for (var i = 0; i < model.count; i++) rows.push(JSON.parse(JSON.stringify(model.get(i))))
+    return rows
+  }
+
+  // Only a model that differs is rebuilt, so an undo in one column leaves the others' rows
+  // (and anything open in them) alone.
+  function refill(model, rows) {
+    if (JSON.stringify(rowsOf(model)) === JSON.stringify(rows)) return
+    model.clear()
+    for (var i = 0; i < rows.length; i++) model.append(rows[i])
+  }
+
+  // Everything staged — what apply() would write — plus where the cursor was.
+  function captureStaged() {
+    var merges = {}
+    for (var k in deskMerges) merges[k] = deskMerges[k]
+    return { L: rowsOf(lmL), C: rowsOf(lmC), R: rowsOf(lmR), W: rowsOf(lmW), mode: mode,
+             spacerDeletes: spacerDeletes, deskMerges: merges, curLane: curLane, cursor: cursor }
+  }
+
+  function stagedKey(state) {
+    return JSON.stringify([state.L, state.C, state.R, state.W, state.mode, state.spacerDeletes,
+                           state.deskMerges])
+  }
+
+  function restoreStaged(state) {
+    iconDrag.reset()
+    deskDrag.reset()
+    wsEditing = -1
+    refill(lmL, state.L)
+    refill(lmC, state.C)
+    refill(lmR, state.R)
+    refill(lmW, state.W)
+    mode = state.mode
+    spacerDeletes = state.spacerDeletes
+    deskMerges = state.deskMerges
+    curLane = state.curLane
+    cursor = Math.max(0, Math.min(modelFor(curLane).count - 1, state.cursor))
+    dirty = true
+  }
+
+  function pushUndo(entry) {
+    undoStack = undoStack.concat([entry])
+    redoStack = []
+  }
+
+  // One user action on the staged arrangement: snapshot first, so undo can put it back. A change
+  // made from inside another (toggleHidden moving the row it hid) is part of the outer one.
+  function change(label, fn) {
+    if (changeDepth > 0) { fn(); return }
+    var before = captureStaged()
+    changeDepth++
+    try { fn() } finally { changeDepth-- }
+    if (stagedKey(before) === stagedKey(captureStaged())) return
+    pushUndo({ label: label, state: before })
+    dirty = true
+  }
+
+  // A list-view drag reorders as it goes, so everything from pick-up to drop is one change.
+  property var gestureState: null
+  function beginGesture() {
+    if (gestureState) return
+    gestureState = captureStaged()
+    changeDepth++
+  }
+  function endGesture(label) {
+    if (!gestureState) return
+    var before = gestureState
+    gestureState = null
+    changeDepth--
+    if (stagedKey(before) !== stagedKey(captureStaged())) pushUndo({ label: label, state: before })
+  }
+
+  // A change that has already happened outside the panel, with the actions that reverse and
+  // repeat it.
+  function record(label, undoFn, redoFn) {
+    pushUndo({ label: label, undo: undoFn, redo: redoFn })
+  }
+
+  function undo() {
+    if (iconDrag.busy || deskDrag.busy || gestureState) return
+    if (undoStack.length === 0) { say("Nothing to undo"); return }
+    var entry = undoStack[undoStack.length - 1]
+    undoStack = undoStack.slice(0, -1)
+    if (entry.state) {
+      var now = captureStaged()
+      restoreStaged(entry.state)
+      entry = { label: entry.label, state: now }
+    } else {
+      entry.undo()
+    }
+    redoStack = redoStack.concat([entry])
+    say("Undone: " + entry.label)
+  }
+
+  function redo() {
+    if (iconDrag.busy || deskDrag.busy || gestureState) return
+    if (redoStack.length === 0) { say("Nothing to redo"); return }
+    var entry = redoStack[redoStack.length - 1]
+    redoStack = redoStack.slice(0, -1)
+    if (entry.state) {
+      var now = captureStaged()
+      restoreStaged(entry.state)
+      entry = { label: entry.label, state: now }
+    } else {
+      entry.redo()
+    }
+    undoStack = undoStack.concat([entry])
+    say("Redone: " + entry.label)
+  }
+
+  // What undo and redo did, in the help line for a few seconds and to a screen reader.
+  function say(text) {
+    undoNote = text
+    undoNoteTimer.restart()
+    keyCatcher.Accessible.announce(text, Accessible.Polite)
+  }
+
+  // ── jobs ────────────────────────────────────────────────────────────────────────
+
+  // The desk actions that change something outside the panel (focus, rename, background, save,
+  // restore) run one after another, in the order they were asked for — an undo straight after the
+  // change it reverses must not overtake it.
+  property var jobs: []
+  function runJob(argv) {
+    jobs = jobs.concat([argv])
+    Qt.callLater(nextJob)
+  }
+  function nextJob() {
+    if (jobProc.running || jobs.length === 0) return
+    jobProc.command = jobs[0]
+    jobs = jobs.slice(1)
+    jobProc.running = true
+  }
+
+  // ── the "are you sure" card ─────────────────────────────────────────────────────
+
+  function openConfirm(message, action) {
+    iconDrag.reset()
+    deskDrag.reset()
+    tileMenu.close()
+    confirmMessage = message
+    confirmAction = action
+    // Cancel is the default: Enter straight after opening changes nothing.
+    confirmDialog.selectedIndex = 0
+    confirmOpen = true
+  }
+
+  function closeConfirm(accepted) {
+    var act = confirmAction
+    confirmOpen = false
+    confirmAction = null
+    if (accepted && act) act()
+    Qt.callLater(focusIconCursor)
   }
 
   // The menu opens under the right-clicked item with its choices built on the spot —
@@ -274,9 +480,15 @@ Panel {
     return lane === "L" ? "top row" : lane === "C" ? "middle row" : "bottom row"
   }
 
+  // The desk row on screen: the three slots each hold one, and the mode shows one of them.
+  function shownDeskRow() {
+    return mode === "1" ? deskRowL : mode === "2" ? deskRowC : deskRowR
+  }
+
   function focusIconCursor() {
-    if (!opened || !iconsOnly || tileMenuOpen || wsEditing >= 0 || bgPicking >= 0 || iconDrag.busy) return
-    var row = curLane === "L" ? rowL : curLane === "C" ? rowC : rowR
+    if (!opened || !iconsOnly || tileMenuOpen || confirmOpen || wsEditing >= 0 || bgPicking >= 0
+        || iconDrag.busy || deskDrag.busy) return
+    var row = curLane === "W" ? shownDeskRow() : curLane === "L" ? rowL : curLane === "C" ? rowC : rowR
     var tile = row.itemAt(cursor)
     if (tile) tile.forceActiveFocus(Qt.OtherFocusReason)
   }
@@ -312,11 +524,15 @@ Panel {
 
   // A desk chip's menu: the desk row's buttons — background, rename (where renaming
   // exists on this machine), save, and restore, which stays listed but inert without a
-  // recording, as the row's dimmed button does.
+  // recording, as the row's dimmed button does — then moving and deleting the desk, where
+  // this machine can renumber its desks (canEditDesks).
   function openDeskMenu(i, chipItem) {
-    if (i < 0 || i >= lmW.count) return
+    if (i < 0 || i >= lmW.count || deskDrag.active) return
+    deskDrag.reset()
     var d = lmW.get(i)
     var n = d.num, name = d.name, pin = d.bgPin, hasSnap = d.hasSnap
+    curLane = "W"
+    cursor = i
     var choices = [{ glyph: iconImage, label: "Background", enabled: true,
                      act: function() { openBgPicker(n, name, pin) } }]
     if (canRename)
@@ -326,6 +542,14 @@ Panel {
                    act: function() { wsSave(n) } })
     choices.push({ glyph: iconRestore, label: "Restore layout", note: hasSnap ? "" : "no recording",
                    enabled: hasSnap, act: function() { wsRestore(n) } })
+    if (canEditDesks) {
+      choices.push({ glyph: "\u2190", label: "Move left", enabled: i > 0,
+                     act: function() { moveDesk(i, i - 1) } })
+      choices.push({ glyph: "\u2192", label: "Move right", enabled: i + 1 < lmW.count,
+                     act: function() { moveDesk(i, i + 1) } })
+      choices.push({ glyph: iconTrash, label: "Delete workspace", note: lmW.count > 1 ? "" : "the only one",
+                     enabled: lmW.count > 1, act: function() { requestDeleteDesk(i) } })
+    }
     openMenu(name, choices, chipItem)
   }
 
@@ -366,11 +590,18 @@ Panel {
   ListModel { id: lmR }
   ListModel { id: lmW }   // the desks
 
-  function modelFor(lane) { return lane === "L" ? lmL : lane === "C" ? lmC : lmR }
+  // "W" is the desks: the keys, the cursor and the undo history treat that row like a lane.
+  function modelFor(lane) { return lane === "W" ? lmW : lane === "L" ? lmL : lane === "C" ? lmC : lmR }
 
   // The icon lanes visible in the current mode, left to right on screen.
   function laneOrder() {
     return mode === "1" ? ["C", "R"] : mode === "2" ? ["L", "R"] : ["L", "C"]
+  }
+
+  // Every row (icon view) or column (list view) in screen order, the desks included — the
+  // order the keys walk.
+  function navOrder() {
+    return mode === "1" ? ["W", "C", "R"] : mode === "2" ? ["L", "W", "R"] : ["L", "C", "W"]
   }
 
   // Switching mode moves the strip; the icon lane that loses its column empties into
@@ -378,13 +609,14 @@ Panel {
   function setMode(m) {
     if (m === mode) return
     iconDrag.reset()
-    if (m === "1") drainLane(lmL, lmC)
-    else if (m === "2") drainLane(lmC, lmL)
-    else if (m === "3") drainLane(lmR, lmC)
-    mode = m
-    var lanes = laneOrder()
-    if (lanes.indexOf(curLane) < 0) { curLane = lanes[0]; cursor = 0 }
-    dirty = true
+    deskDrag.reset()
+    change("Move the workspaces", function() {
+      if (m === "1") drainLane(lmL, lmC)
+      else if (m === "2") drainLane(lmC, lmL)
+      else if (m === "3") drainLane(lmR, lmC)
+      mode = m
+      if (navOrder().indexOf(curLane) < 0) { curLane = laneOrder()[0]; cursor = 0 }
+    })
   }
   // "+ spacer" (Dave, 2026-09-01): add a new spacer row to a lane — at its end, or at
   // `at` when given (the right lane's + tile sits at the lane's start) — staged like
@@ -394,9 +626,10 @@ Panel {
     var m = modelFor(lane)
     var row = { wid: "omarchy.spacer", label: prettyName("omarchy.spacer"),
                 glyph: iconFor("omarchy.spacer"), hid: false, lit: true }
-    if (at === undefined) m.append(row)
-    else m.insert(Math.max(0, Math.min(m.count, at)), row)
-    dirty = true
+    change("Add spacer", function() {
+      if (at === undefined) m.append(row)
+      else m.insert(Math.max(0, Math.min(m.count, at)), row)
+    })
   }
 
   // The x on a spacer row (Dave, 2026-09-01): spacers are removable outright, not
@@ -404,10 +637,11 @@ Panel {
   function removeSpacer(lane, i) {
     var m = modelFor(lane)
     if (i < 0 || i >= m.count || m.get(i).wid !== "omarchy.spacer") return
-    m.remove(i)
-    spacerDeletes++
-    if (curLane === lane) cursor = Math.max(0, Math.min(m.count - 1, cursor))
-    dirty = true
+    change("Delete spacer", function() {
+      m.remove(i)
+      spacerDeletes++
+      if (curLane === lane) cursor = Math.max(0, Math.min(m.count - 1, cursor))
+    })
   }
 
   function drainLane(from, into) {
@@ -420,10 +654,17 @@ Panel {
   }
 
   // Desks come from Hyprland itself (works on both machines); recordings from the
-  // HYPER+S snapshot directory. Reordering desks is deliberately NOT offered: a desk's
-  // NUMBER is load-bearing in four places that do not read each other (AGENTS.md names
-  // them), so renumbering is a hands-on job, never a drag.
-  function fillWorkspaces(wsJson, activeJson, snapText, pins) {
+  // HYPER+S snapshot directory. Which workspaces are desks: the PERSISTENT ones where the
+  // config declares any (Dave's machine: 1–8, so the workout's 9 and a second screen's
+  // workspace stay out, exactly as the bar's own strip leaves them out), otherwise every
+  // workspace from 1 to 10 that exists (stock Omarchy, which declares none).
+  //
+  // Reordering and deleting desks (2026-09-19) renumbers them, and a desk's number is
+  // load-bearing wherever a config routes windows or keys to it. bin/ws-renumber moves what
+  // Barbarian and stock Omarchy own, and runs the machine's workspaces-renumbered hooks for
+  // the rest. So a machine whose config pins desks (any persistent one) and has no such hook
+  // cannot have its desks moved from here — its config would put them back at next login.
+  function fillWorkspaces(wsJson, activeJson, snapText, pins, hookPresent) {
     pins = pins || {}
     lmW.clear()
     var active = -1
@@ -437,38 +678,142 @@ Panel {
     var list = []
     try { list = JSON.parse(wsJson) } catch (e2) { return }
     list.sort(function(a, b) { return a.id - b.id })
-    for (var i = 0; i < list.length; i++) {
-      var w = list[i]
-      if (w.id < 1) continue   // scratchpads / specials
-      var nm = String(w.name || "")
-      if (nm === "" || nm === String(w.id)) nm = "Desk " + w.id
-      lmW.append({ num: w.id, name: nm, focused: w.id === active, hasSnap: snaps[w.id] === true,
-                   bgPin: String(pins[w.id] || "") })
+    var pinned = list.filter(function(w) { return w.id >= 1 && w.ispersistent === true })
+    var desks = pinned.length > 0 ? pinned
+      : list.filter(function(w) { return w.id >= 1 && w.id <= 10 })
+    var slots = []
+    for (var i = 0; i < desks.length; i++) {
+      var w = desks[i]
+      slots.push(w.id)
+      lmW.append({ num: w.id, name: displayName(w.id, w.name), rawName: String(w.name || ""),
+                   focused: w.id === active, hasSnap: snaps[w.id] === true,
+                   bgPin: String(pins[w.id] || ""), windows: w.windows || 0 })
     }
+    deskSlots = slots
+    deskMerges = ({})
+    canEditDesks = pinned.length === 0 || hookPresent === true
   }
 
+  function displayName(n, raw) {
+    raw = String(raw || "")
+    return raw === "" || raw === String(n) ? "Desk " + n : raw
+  }
+
+  // ── desks: staged ───────────────────────────────────────────────────────────────
+
+  function moveDesk(from, to) {
+    if (!canEditDesks || from === to || from < 0 || to < 0 || from >= lmW.count || to >= lmW.count) return
+    var name = lmW.get(from).name
+    change("Move " + name, function() {
+      lmW.move(from, to, 1)
+      wsEditing = -1
+      if (curLane === "W") cursor = to
+    })
+    keyCatcher.Accessible.announce(name + ", workspace " + (to + 1) + " of " + lmW.count, Accessible.Polite)
+  }
+
+  // Where a deleted desk's windows go: the desk before it in the new order, or the one after
+  // it when it is the first.
+  function mergeTargetFor(i) { return i > 0 ? i - 1 : i + 1 }
+
+  // Asks first (Dave, 2026-09-19: "When deleting a workspace, it should ask if you are sure"),
+  // and says where the windows will go.
+  function requestDeleteDesk(i) {
+    if (!canEditDesks || i < 0 || i >= lmW.count || lmW.count < 2) return
+    var d = lmW.get(i), into = lmW.get(mergeTargetFor(i))
+    var num = d.num
+    var where = "\u201C" + into.name + "\u201D"
+    openConfirm(d.windows > 0
+      ? "Delete the workspace \u201C" + d.name + "\u201D? "
+        + (d.windows === 1 ? "Its window" : "Its " + d.windows + " windows") + " will move to " + where + "."
+      : "Delete the empty workspace \u201C" + d.name + "\u201D?",
+      function() { deleteDesk(rowForWs(num)) })
+  }
+
+  function deleteDesk(i) {
+    if (!canEditDesks || i < 0 || i >= lmW.count || lmW.count < 2) return
+    var d = lmW.get(i), t = mergeTargetFor(i)
+    var num = d.num, name = d.name, windows = d.windows
+    var intoNum = lmW.get(t).num, intoWindows = lmW.get(t).windows
+    change("Delete " + name, function() {
+      // A desk whose windows were already coming here now goes where this one's go.
+      var merges = {}
+      for (var k in deskMerges) merges[k] = deskMerges[k] === num ? intoNum : deskMerges[k]
+      merges[num] = intoNum
+      deskMerges = merges
+      lmW.setProperty(t, "windows", intoWindows + windows)
+      lmW.remove(i)
+      wsEditing = -1
+      if (curLane === "W") cursor = Math.max(0, Math.min(lmW.count - 1, cursor))
+    })
+    keyCatcher.Accessible.announce(name + " deleted. Control Z undoes it.", Accessible.Polite)
+  }
+
+  // Whether apply() has desks to renumber: an order that differs from the one the panel
+  // opened with, or a deleted desk.
+  function desksChanged() {
+    for (var k in deskMerges) return true
+    for (var i = 0; i < lmW.count; i++) if (lmW.get(i).num !== deskSlots[i]) return true
+    return false
+  }
+
+  // ── desks: at once ──────────────────────────────────────────────────────────────
+
   function wsFocus(n) {
-    wsActProc.command = ["hyprctl", "dispatch", 'hl.dsp.focus({ workspace = "' + n + '" })']
-    wsActProc.running = true
+    runJob(["hyprctl", "dispatch", 'hl.dsp.focus({ workspace = "' + n + '" })'])
   }
+
+  // Save stashes the recording it replaces, so undo can put it back (or remove the new one
+  // when there was none).
   function wsSave(n) {
-    wsActProc.command = ["sh", "-c",
-      '"$HOME/.config/omarchy/workspace-layout/ws-layout" snapshot ' + n]
-    wsActProc.running = true
-    var m = rowForWs(n); if (m >= 0) lmW.setProperty(m, "hasSnap", true)
+    var m = rowForWs(n)
+    if (m < 0) return
+    var had = lmW.get(m).hasSnap, name = lmW.get(m).name
+    var file = snapDir + "/ws" + n + ".json"
+    var key = "snap-" + n + "-" + Date.now()
+    runJob(["sh", "-c", '"$0" save "$1" "$2" && "$HOME/.config/omarchy/workspace-layout/ws-layout" snapshot "$3"',
+            stashScript, file, key + "-before", String(n)])
+    setHasSnap(n, true)
+    record("Save layout of " + name,
+      function() {
+        runJob(["sh", "-c", '"$0" save "$1" "$2" && "$0" put "$3" "$1"', stashScript, file,
+                key + "-after", key + "-before"])
+        setHasSnap(n, had)
+      },
+      function() {
+        runJob([stashScript, "put", key + "-after", file])
+        setHasSnap(n, true)
+      })
   }
+
+  function setHasSnap(n, on) {
+    var m = rowForWs(n)
+    if (m >= 0) lmW.setProperty(m, "hasSnap", on)
+  }
+
   function wsRestore(n) {
-    wsActProc.command = ["sh", "-c",
-      '"$HOME/.config/omarchy/workspace-layout/ws-layout" restore ' + n]
-    wsActProc.running = true
+    runJob(["sh", "-c", '"$HOME/.config/omarchy/workspace-layout/ws-layout" restore "$0"', String(n)])
   }
+
   function wsRename(n, name) {
     name = String(name || "").trim()
-    if (name === "") return
-    wsActProc.command = ["sh", "-c",
-      '"$HOME/.local/bin/workspace-edit" set ' + n + " --name " + JSON.stringify(name)]
-    wsActProc.running = true
-    var m = rowForWs(n); if (m >= 0) lmW.setProperty(m, "name", name)
+    var m = rowForWs(n)
+    if (name === "" || m < 0) return
+    var before = lmW.get(m).rawName, shown = lmW.get(m).name
+    if (name === before) return
+    applyRename(n, name)
+    record("Rename " + shown,
+      function() { applyRename(n, before) },
+      function() { applyRename(n, name) })
+  }
+
+  // An empty name gives the desk back its bare number (workspace-edit's rule).
+  function applyRename(n, raw) {
+    runJob(["sh", "-c", '"$HOME/.local/bin/workspace-edit" set "$0" --name "$1"', String(n), String(raw || "")])
+    var m = rowForWs(n)
+    if (m < 0) return
+    lmW.setProperty(m, "rawName", String(raw || ""))
+    lmW.setProperty(m, "name", displayName(n, raw))
   }
   function openBgPicker(n, name, pin) {
     console.log("BARB openBgPicker", n, name, pin)
@@ -481,13 +826,21 @@ Panel {
   // repaints immediately if n is the desk on screen; the row updates optimistically,
   // and the picker view hands back to the columns.
   function bgPick(n, path) {
-    wsActProc.command = ["sh", "-c",
-      '"' + pickScript + '" ' + n + " " + JSON.stringify(path)]
-    wsActProc.running = true
+    var m = rowForWs(n)
+    var before = m >= 0 ? lmW.get(m).bgPin : ""
+    var name = m >= 0 ? lmW.get(m).name : "Desk " + n
+    applyPin(n, path)
+    bgPicking = -1
+    record("Background of " + name,
+      function() { applyPin(n, before === "" ? "default" : before) },
+      function() { applyPin(n, path) })
+  }
+
+  function applyPin(n, path) {
+    runJob([pickScript, String(n), path])
     var m = rowForWs(n)
     if (m >= 0) lmW.setProperty(m, "bgPin", path === "default" ? "" : path)
     bgPickingPin = path === "default" ? "" : path
-    bgPicking = -1
   }
 
   // The + chip: the shell's own image grid over Pictures and Downloads (thumbnails, type to
@@ -508,13 +861,31 @@ Panel {
   // background to auto"): the image leaves the theme — every desk pinned to it goes back to
   // Auto and the file goes to the trash (bin/ws-bg-remove). The strip and the rows are updated
   // here at once, and the picker view stays open.
+  // Undo takes the file back out of the trash and pins it to the same desks again.
   function bgRemove(path) {
-    wsActProc.command = ["sh", "-c", '"' + removeScript + '" ' + JSON.stringify(path)]
-    wsActProc.running = true
+    var desks = []
+    for (var i = 0; i < lmW.count; i++)
+      if (lmW.get(i).bgPin === path) desks.push(lmW.get(i).num)
+    applyBgRemove(path)
+    record("Remove a background image",
+      function() { applyBgRestore(path, desks) },
+      function() { applyBgRemove(path) })
+  }
+
+  function applyBgRemove(path) {
+    runJob([removeScript, path])
     bgThemeList = bgThemeList.filter(function(p) { return p !== path })
     for (var i = 0; i < lmW.count; i++)
       if (lmW.get(i).bgPin === path) lmW.setProperty(i, "bgPin", "")
     if (bgPickingPin === path) bgPickingPin = ""
+  }
+
+  function applyBgRestore(path, desks) {
+    runJob([restoreBgScript, path].concat(desks.map(String)))
+    if (bgThemeList.indexOf(path) < 0) bgThemeList = bgThemeList.concat([path]).sort()
+    for (var i = 0; i < lmW.count; i++)
+      if (desks.indexOf(lmW.get(i).num) >= 0) lmW.setProperty(i, "bgPin", path)
+    if (bgPicking >= 0 && desks.indexOf(bgPicking) >= 0) bgPickingPin = path
   }
 
   function rowForWs(n) {
@@ -579,6 +950,7 @@ Panel {
       var tail4 = String(tail3[1] || "").split("---BGS---")
       var tail4b = String(tail4[1] || "").split("---COLORS---")
       var tail5 = String(tail4b[1] || "").split("---PINS---")
+      var tail6 = String(tail5[1] || "").split("---HOOK---")
       canRename = String(tail4[0] || "").trim() !== ""
       var bgs = [], bl = String(tail4b[0] || "").split("\n")
       for (var bi = 0; bi < bl.length; bi++)
@@ -602,12 +974,13 @@ Panel {
       }
       bgSolids = sol
       var pins = {}
-      var pl = String(tail5[1] || "").split("\n")
+      var pl = String(tail6[0] || "").split("\n")
       for (var pi = 0; pi < pl.length; pi++) {
         var pm = pl[pi].match(/\/ws(\d+)\.[A-Za-z]+\|(.+)$/)
         if (pm) pins[parseInt(pm[1], 10)] = pm[2].trim()
       }
-      fillWorkspaces(tail[0] || "[]", tail2[0] || "{}", tail3[0] || "", pins)
+      fillWorkspaces(tail[0] || "[]", tail2[0] || "{}", tail3[0] || "", pins,
+                     String(tail6[1] || "").trim() !== "")
     } catch (e) {
       loadError = "Could not read the bar layout file."
     }
@@ -615,6 +988,8 @@ Panel {
     bgPicking = -1
     tileMenu.close()
     spacerDeletes = 0
+    undoStack = []
+    redoStack = []
     var lanes = laneOrder()
     curLane = lanes[0]
     for (var li = 0; li < lanes.length; li++)
@@ -630,22 +1005,26 @@ Panel {
   // Showing one again leaves it where it is, in among the hidden, until it is dragged or
   // carried out.
   function toggleHidden(lane, i) {
+    if (lane === "W") return
     var m = modelFor(lane)
     if (i < 0 || i >= m.count) return
     var nowHid = !m.get(i).hid
-    m.setProperty(i, "hid", nowHid)
-    // Optimistic: an un-parked widget lights up (it only actually draws after apply).
-    m.setProperty(i, "lit", !nowHid)
-    dirty = true
-    if (nowHid) moveItem(lane, i, lane === "R" ? 0 : m.count - 1)
+    change((nowHid ? "Hide " : "Show ") + m.get(i).label, function() {
+      m.setProperty(i, "hid", nowHid)
+      // Optimistic: an un-parked widget lights up (it only actually draws after apply).
+      m.setProperty(i, "lit", !nowHid)
+      if (nowHid) moveItem(lane, i, lane === "R" ? 0 : m.count - 1)
+    })
   }
 
   function moveItem(lane, from, to) {
+    if (lane === "W") { moveDesk(from, to); return }
     var m = modelFor(lane)
     if (from === to || from < 0 || to < 0 || from >= m.count || to >= m.count) return
-    m.move(from, to, 1)
-    if (curLane === lane) cursor = to
-    dirty = true
+    change("Move " + m.get(from).label, function() {
+      m.move(from, to, 1)
+      if (curLane === lane) cursor = to
+    })
     if (iconsOnly) keyCatcher.Accessible.announce(m.get(to).label + ", " + iconRowName(lane)
       + ", position " + (to + 1) + " of " + m.count, Accessible.Polite)
   }
@@ -653,17 +1032,18 @@ Panel {
   // A row changes lanes whole: removed from one column, inserted into the other at the
   // drop position. The cursor follows it.
   function moveAcross(fromLane, index, toLane, at) {
-    if (fromLane === toLane) return
+    if (fromLane === toLane || fromLane === "W" || toLane === "W") return
     var m1 = modelFor(fromLane), m2 = modelFor(toLane)
     if (index < 0 || index >= m1.count) return
     var r = m1.get(index)
     var row = { wid: r.wid, label: r.label, glyph: r.glyph, hid: r.hid, lit: r.lit }
-    m1.remove(index)
-    at = Math.min(Math.max(0, at), m2.count)
-    m2.insert(at, row)
-    curLane = toLane
-    cursor = at
-    dirty = true
+    change("Move " + row.label, function() {
+      m1.remove(index)
+      at = Math.min(Math.max(0, at), m2.count)
+      m2.insert(at, row)
+      curLane = toLane
+      cursor = at
+    })
     if (iconsOnly) keyCatcher.Accessible.announce(row.label + ", " + iconRowName(toLane)
       + ", position " + (at + 1) + " of " + m2.count, Accessible.Polite)
   }
@@ -675,7 +1055,7 @@ Panel {
   }
 
   function switchLane(dir) {
-    var lanes = laneOrder()
+    var lanes = navOrder()
     var i = lanes.indexOf(curLane)
     if (i < 0) i = 0
     var j = i + (dir < 0 ? -1 : 1)
@@ -710,6 +1090,18 @@ Panel {
     for (i = 0; i < spacerDeletes; i++) argv.push("DEL:omarchy.spacer")
     applyProc.command = argv
     applyProc.running = true
+    if (desksChanged()) renumberDesks()
+  }
+
+  // Detached: it outlives the panel, and a bar reload from the layout write above cannot stop
+  // it half way. It reports only failures, as a notification.
+  function renumberDesks() {
+    var argv = [renumberScript, "--order"]
+    var order = []
+    for (var i = 0; i < lmW.count; i++) order.push(lmW.get(i).num)
+    argv.push(order.join(","))
+    for (var k in deskMerges) argv.push("--delete", k + ":" + deskMerges[k])
+    Quickshell.execDetached(["sh", "-c", 'exec "$0" "$@" >/dev/null 2>&1'].concat(argv))
   }
 
   function acceptAndClose() { close() }
@@ -717,6 +1109,12 @@ Panel {
 
   onOpenedChanged: {
     iconDrag.reset()
+    deskDrag.reset()
+    confirmOpen = false
+    confirmAction = null
+    gestureState = null
+    changeDepth = 0
+    undoNote = ""
     if (opened) {
       dirty = false
       cancelled = false
@@ -728,7 +1126,8 @@ Panel {
         "echo ---CANRENAME---; command -v \"$HOME/.local/bin/workspace-edit\" 2>/dev/null || true; " +
         "echo ---BGS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; find -L \"$HOME/.config/omarchy/backgrounds/$tn\" \"$d\" -maxdepth 1 -type f 2>/dev/null | sort; " +
         "echo ---COLORS---; cat \"$HOME/.local/state/omarchy/current/theme/colors.toml\" 2>/dev/null; " +
-        "echo ---PINS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; for f in \"$HOME/.config/omarchy/workspace-backgrounds/$tn\"/ws*.*; do [ -e \"$f\" ] && echo \"$f|$(readlink -f \"$f\")\"; done; true"]
+        "echo ---PINS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; for f in \"$HOME/.config/omarchy/workspace-backgrounds/$tn\"/ws*.*; do [ -e \"$f\" ] && echo \"$f|$(readlink -f \"$f\")\"; done; " +
+        "echo ---HOOK---; ls -A \"$HOME/.config/omarchy/hooks/workspaces-renumbered\" \"$HOME/.config/omarchy/hooks/workspaces-renumbered.d\" 2>/dev/null; true"]
       readProc.running = true
     } else if (dirty && !cancelled) {
       apply()
@@ -746,10 +1145,17 @@ Panel {
     id: applyProc
   }
 
-  // One desk action at a time (focus / save / restore / rename) — each tool it calls
-  // does its own toasting, so nothing is echoed here.
+  // The desk actions, one at a time in the order they were asked for (see runJob) — each
+  // tool it calls does its own toasting, so nothing is echoed here.
   Process {
-    id: wsActProc
+    id: jobProc
+    onExited: Qt.callLater(root.nextJob)
+  }
+
+  Timer {
+    id: undoNoteTimer
+    interval: 3500
+    onTriggered: root.undoNote = ""
   }
 
   // The view preference. Written whole on every flip; a missing file means list mode.
@@ -913,6 +1319,8 @@ Panel {
         drag.axis: Drag.XAndYAxis
 
         onContainsMouseChanged: if (containsMouse) { root.curLane = list.lane; root.cursor = wrap.index }
+        // The row reorders live as it is dragged, so the whole drag is one undo step.
+        drag.onActiveChanged: if (drag.active) root.beginGesture()
         onClicked: function(mouse) {
           var p = dragArea.mapToItem(eye, mouse.x, mouse.y)
           if (p.x > -Style.space(6) && p.x < eye.width + Style.space(6)
@@ -939,6 +1347,7 @@ Panel {
           }
         }
         onReleased: {
+          var label = "Move " + wrap.model.label
           // Dropped over another visible icon column? The row changes lanes there.
           for (var oi = 0; oi < list.others.length; oi++) {
             var ol = list.others[oi]
@@ -951,8 +1360,9 @@ Panel {
             }
           }
           card.x = 0; card.y = Style.space(2)
+          root.endGesture(label)
         }
-        onCanceled: { card.x = 0; card.y = Style.space(2) }
+        onCanceled: { card.x = 0; card.y = Style.space(2); root.endGesture("Move") }
       }
     }
   }
@@ -1201,106 +1611,130 @@ Panel {
 
   // Icon-only mode's workspaces row: the desks as chips, placed as the strip sits on
   // the bar. A click goes to the desk; a right-click opens the desk menu (background,
-  // rename, save, restore); a rename edits the chip in place. No dragging — a desk's
-  // number is load-bearing (see fillWorkspaces).
-  component DeskRow: Item {
+  // rename, save, restore, move, delete); a rename edits the chip in place. Chips drag
+  // along the row to reorder the desks (2026-09-19) — the icon tiles' pick-up, make-room
+  // and drop, through a controller of their own so a desk never lands among the icons.
+  component DeskRow: Reordering.ReorderRow {
     id: drow
 
-    // "left", "center" or "right".
-    property string align: "center"
-
+    property alias align: drow.alignment
+    lane: "W"
+    controller: deskDrag
+    model: lmW
     width: parent.width
-    height: root.rowSlotHeight
+    variableWidths: true
+    spacing: Style.space(4)
+    reorderable: root.canEditDesks
+    ignoredIndex: root.wsEditing
+    tileHeight: root.tileHeight
+    verticalPadding: root.rowPad
+    hysteresis: Style.space(3)
 
-    Row {
-      id: chips
-      x: drow.align === "right" ? drow.width - width
-       : drow.align === "center" ? Math.round((drow.width - width) / 2) : 0
+    onSelected: function(index) {
+      if (deskDrag.busy) return
+      root.curLane = "W"
+      root.cursor = index
+    }
+    onActivated: function(index) { if (index < lmW.count) root.wsFocus(lmW.get(index).num) }
+    onMenuRequested: function(index, anchor) { root.openDeskMenu(index, anchor) }
+
+    Rectangle {
+      visible: drow.receiving && deskDrag.sourceIndex !== deskDrag.targetIndex
+      x: drow.landingX()
+      y: root.rowPad + root.tileHeight + Style.space(4)
+      width: deskDrag.previewWidth
+      height: Math.max(1, Style.space(2))
+      radius: height / 2
+      color: root.accent
+      Accessible.ignored: true
+    }
+
+    delegate: Rectangle {
+      id: chip
+      required property var model
+      required property int index
+      readonly property bool editing: root.wsEditing === index
+      property bool ready: false
+
+      x: drow.itemX(index)
       y: root.rowPad
-      spacing: Style.space(4)
+      width: editing ? Style.space(150) : chipLabel.implicitWidth + Style.space(20)
+      height: root.tileHeight
+      radius: Style.cornerRadius
+      opacity: drow.isLifted(index) ? 0 : 1
+      color: chip.model.focused
+        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+        : (root.curLane === "W" && root.cursor === index) || drow.hoveredIndex === index
+          ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+      Component.onCompleted: ready = true
 
-      Repeater {
-        model: lmW
+      Behavior on color { ColorAnimation { duration: 80 } }
+      Behavior on x {
+        enabled: chip.ready && !drow.isLifted(chip.index)
+        NumberAnimation { duration: deskDrag.motionDuration; easing.type: Easing.OutCubic }
+      }
 
-        delegate: Rectangle {
-          id: chip
-          required property var model
-          required property int index
-          readonly property bool editing: root.wsEditing === index
+      Accessible.role: Accessible.Button
+      Accessible.name: chip.model.name + ", workspace " + (index + 1) + " of " + drow.count
+      Accessible.description: root.canEditDesks
+        ? "Click to go there. Reorder with H and L, delete with X. Press F10 for options."
+        : "Click to go there. Press F10 for options."
+      Accessible.focusable: true
+      Accessible.onPressAction: root.wsFocus(chip.model.num)
 
-          width: editing ? Style.space(150) : chipLabel.implicitWidth + Style.space(20)
-          height: root.tileHeight
-          radius: Style.cornerRadius
-          color: chip.model.focused
-            ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
-            : chipArea.containsMouse
-              ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
-              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_F10 || event.key === Qt.Key_Menu) {
+          root.openDeskMenu(index, chip)
+          event.accepted = true
+        }
+      }
 
-          Behavior on color { ColorAnimation { duration: 80 } }
+      // Centred on the capital-letter band rather than the line box, so every name
+      // sits at the same height whatever its descenders, and a capital is centred
+      // between the rules like the glyphs beside it.
+      TextMetrics {
+        id: capBand
+        font: chipLabel.font
+        text: "H"
+      }
 
-          // Centred on the capital-letter band rather than the line box, so every name
-          // sits at the same height whatever its descenders, and a capital is centred
-          // between the rules like the glyphs beside it.
-          TextMetrics {
-            id: capBand
-            font: chipLabel.font
-            text: "H"
-          }
+      Text {
+        id: chipLabel
+        visible: !chip.editing
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: Math.round(chip.height / 2 - (chipLabel.baselineOffset + capBand.tightBoundingRect.y
+                                         + capBand.tightBoundingRect.height / 2))
+        text: chip.model.name
+        textFormat: Text.PlainText
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        color: root.foreground
+      }
 
-          Text {
-            id: chipLabel
-            visible: !chip.editing
-            anchors.horizontalCenter: parent.horizontalCenter
-            y: Math.round(chip.height / 2 - (chipLabel.baselineOffset + capBand.tightBoundingRect.y
-                                             + capBand.tightBoundingRect.height / 2))
-            text: chip.model.name
-            textFormat: Text.PlainText
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-          }
+      TextField {
+        id: chipEdit
+        visible: chip.editing
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: Style.space(2)
+        anchors.verticalCenter: parent.verticalCenter
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        color: root.foreground
+        onAccepted: { root.wsRename(chip.model.num, text); root.wsEditing = -1 }
+        Keys.onEscapePressed: root.wsEditing = -1
+      }
 
-          TextField {
-            id: chipEdit
-            visible: chip.editing
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.margins: Style.space(2)
-            anchors.verticalCenter: parent.verticalCenter
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-            onAccepted: { root.wsRename(chip.model.num, text); root.wsEditing = -1 }
-            Keys.onEscapePressed: root.wsEditing = -1
-          }
-
-          // The rename lands here from the menu: fill the field and hand it the keys.
-          // Only the row on screen answers — the other two slots hold hidden twins.
-          Connections {
-            target: root
-            function onWsEditingChanged() {
-              if (root.wsEditing !== chip.index || !drow.visible) return
-              chipEdit.text = chip.model.name
-              chipEdit.forceActiveFocus()
-              chipEdit.selectAll()
-            }
-          }
-
-          MouseArea {
-            id: chipArea
-            anchors.fill: parent
-            hoverEnabled: true
-            enabled: !chip.editing
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.wsFocus(chip.model.num)
-          }
-
-          TapHandler {
-            acceptedButtons: Qt.RightButton
-            enabled: !chip.editing
-            onTapped: root.openDeskMenu(chip.index, chip)
-          }
+      // The rename lands here from the menu: fill the field and hand it the keys.
+      // Only the row on screen answers — the other two slots hold hidden twins.
+      Connections {
+        target: root
+        function onWsEditingChanged() {
+          if (root.wsEditing !== chip.index || !drow.visible) return
+          chipEdit.text = chip.model.name
+          chipEdit.forceActiveFocus()
+          chipEdit.selectAll()
         }
       }
     }
@@ -1382,156 +1816,201 @@ Panel {
   }
 
   // The desks column body — go, rename (SER8 only, the sync owns the MacBook's names),
-  // save (HYPER+S) and restore (HYPER+R) per desk. Reusable in whichever slot the mode
-  // puts it. No dragging here: a desk's NUMBER is load-bearing in four places
-  // (see fillWorkspaces).
-  component DeskList: Column {
+  // save (HYPER+S), restore (HYPER+R) and delete per desk. Reusable in whichever slot the
+  // mode puts it. Rows drag up and down to reorder the desks, live like the icon columns
+  // (2026-09-19); the number shown is the one the desk will have once the change is applied.
+  component DeskList: ListView {
     id: dlist
+
+    readonly property int slotHeight: Style.space(34)
+    width: parent.width
+    height: count * slotHeight
+    clip: false
+    interactive: false
     spacing: 0
+    model: lmW
 
-    Repeater {
-      model: lmW
+    move: Transition { NumberAnimation { properties: "y"; duration: 110 } }
+    moveDisplaced: Transition { NumberAnimation { properties: "y"; duration: 110 } }
+    displaced: Transition { NumberAnimation { properties: "y"; duration: 110 } }
 
-            delegate: Item {
-        id: wrow
-        required property var model
-        required property int index
+    delegate: Item {
+      id: wrow
+      required property var model
+      required property int index
 
-        width: dlist.width
-        height: Style.space(34)
+      width: dlist.width
+      height: dlist.slotHeight
+      z: rowDrag.drag.active ? 10 : 0
 
-        Rectangle {
-          id: wcard
-          width: wrow.width
-          // Fixed row height, NOT wrow.height - the delegate grows to hold the open
-          // background picker, and a card bound to it ballooned over the rows below
-          // (Dave's "jumbled" screenshot, 2026-09-01).
-          height: Style.space(30)
-          y: Style.space(2)
-          radius: Style.cornerRadius
-          color: wrow.model.focused
+      // Under the card, so the card's buttons take their own clicks: a click anywhere else
+      // on the row goes to the desk, and a drag reorders the desks.
+      MouseArea {
+        id: rowDrag
+        anchors.fill: parent
+        hoverEnabled: true
+        enabled: root.wsEditing !== wrow.index
+        cursorShape: !root.canEditDesks ? Qt.PointingHandCursor
+          : drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+        drag.target: root.canEditDesks ? wcard : null
+        drag.axis: Drag.YAxis
+
+        onContainsMouseChanged: if (containsMouse) { root.curLane = "W"; root.cursor = wrow.index }
+        drag.onActiveChanged: if (drag.active) root.beginGesture()
+        onClicked: root.wsFocus(wrow.model.num)
+        onPositionChanged: {
+          if (!drag.active) return
+          var centerY = wcard.mapToItem(dlist.contentItem, 0, wcard.height / 2).y
+          var to = Math.max(0, Math.min(dlist.count - 1, Math.floor(centerY / dlist.slotHeight)))
+          if (to !== wrow.index) root.moveDesk(wrow.index, to)
+        }
+        onReleased: {
+          var label = "Move " + wrow.model.name
+          wcard.x = 0; wcard.y = Style.space(2)
+          root.endGesture(label)
+        }
+        onCanceled: { wcard.x = 0; wcard.y = Style.space(2); root.endGesture("Move") }
+      }
+
+      Rectangle {
+        id: wcard
+        width: wrow.width
+        // Fixed row height, NOT wrow.height - the delegate grows to hold the open
+        // background picker, and a card bound to it ballooned over the rows below
+        // (Dave's "jumbled" screenshot, 2026-09-01).
+        height: Style.space(30)
+        y: Style.space(2)
+        radius: Style.cornerRadius
+        color: rowDrag.drag.active
+          ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+          : wrow.model.focused
             ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
-            : nameArea.containsMouse
+            : (root.curLane === "W" && root.cursor === wrow.index) || rowDrag.containsMouse
               ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
               : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
 
-          Text {
-            id: wnum
-            anchors.left: parent.left
-            anchors.leftMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            text: wrow.model.num
-            textFormat: Text.PlainText
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            color: Qt.darker(root.foreground, 1.6)
-          }
-
-          Text {
-            id: wname
-            visible: root.wsEditing !== wrow.index
-            anchors.left: wnum.right
-            anchors.leftMargin: Style.space(8)
-            anchors.right: wimg.left
-            anchors.rightMargin: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            text: wrow.model.name
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-          }
-
-          TextField {
-            id: wedit
-            visible: root.wsEditing === wrow.index
-            anchors.left: wnum.right
-            anchors.leftMargin: Style.space(4)
-            anchors.right: wimg.left
-            anchors.rightMargin: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            color: root.foreground
-            onVisibleChanged: if (visible && wrow.model) { text = wrow.model.name; forceActiveFocus(); selectAll() }
-            onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
-            Keys.onEscapePressed: root.wsEditing = -1
-          }
-
-          MouseArea {
-            id: nameArea
-            anchors.left: parent.left
-            anchors.right: wimg.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            hoverEnabled: true
-            enabled: root.wsEditing !== wrow.index
-            onClicked: root.wsFocus(wrow.model.num)
-          }
-
-          PanelActionButton {
-            id: wimg
-            // No rename on this machine, no gap for it: skip the hidden pencil (anchors keep
-            // an invisible item's width — the MacBook showed an empty column, 2026-09-01).
-            anchors.right: root.canRename ? wpencil.left : wsave.left
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.iconImage
-            tooltipText: "Background"
-            // Uniform with the other desk buttons: with every desk pinned, the old
-            // accent-when-pinned tint was always on — a signal carrying nothing
-            // (Dave queried the odd colour, 2026-09-01). The picker's highlighted
-            // swatch shows the pin state instead.
-            foreground: Qt.darker(root.foreground, 1.8)
-            hoverColor: root.accent
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: { console.log("BARB wimg clicked", wrow.model.num); root.openBgPicker(wrow.model.num, wrow.model.name, wrow.model.bgPin) }
-          }
-
-          PanelActionButton {
-            id: wpencil
-            visible: root.canRename
-            anchors.right: wsave.left
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.iconPencil
-            tooltipText: "Rename"
-            foreground: Qt.darker(root.foreground, 1.8)
-            hoverColor: root.accent
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: root.wsEditing = root.wsEditing === wrow.index ? -1 : wrow.index
-          }
-
-          PanelActionButton {
-            id: wsave
-            anchors.right: wrestore.left
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.iconSave
-            tooltipText: "Save layout (HYPER+S)"
-            foreground: Qt.darker(root.foreground, 1.8)
-            hoverColor: root.accent
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: root.wsSave(wrow.model.num)
-          }
-
-          PanelActionButton {
-            id: wrestore
-            anchors.right: parent.right
-            anchors.rightMargin: Style.space(2)
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: root.iconRestore
-            tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
-            foreground: Qt.darker(root.foreground, 1.8)
-            hoverColor: root.accent
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            opacity: wrow.model.hasSnap ? 1 : 0.3
-            onClicked: if (wrow.model.hasSnap) root.wsRestore(wrow.model.num)
-          }
+        Text {
+          id: wnum
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          text: String(root.deskSlots[wrow.index] !== undefined ? root.deskSlots[wrow.index] : wrow.model.num)
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          color: Qt.darker(root.foreground, 1.6)
         }
 
+        Text {
+          id: wname
+          visible: root.wsEditing !== wrow.index
+          anchors.left: wnum.right
+          anchors.leftMargin: Style.space(8)
+          anchors.right: wimg.left
+          anchors.rightMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          text: wrow.model.name
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          color: root.foreground
+        }
+
+        TextField {
+          id: wedit
+          visible: root.wsEditing === wrow.index
+          anchors.left: wnum.right
+          anchors.leftMargin: Style.space(4)
+          anchors.right: wimg.left
+          anchors.rightMargin: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          color: root.foreground
+          onVisibleChanged: if (visible && wrow.model && wrow.model.name !== undefined) { text = wrow.model.name; forceActiveFocus(); selectAll() }
+          onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
+          Keys.onEscapePressed: root.wsEditing = -1
+        }
+
+        PanelActionButton {
+          id: wimg
+          // No rename on this machine, no gap for it: skip the hidden pencil (anchors keep
+          // an invisible item's width — the MacBook showed an empty column, 2026-09-01).
+          anchors.right: root.canRename ? wpencil.left : wsave.left
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.iconImage
+          tooltipText: "Background"
+          // Uniform with the other desk buttons: with every desk pinned, the old
+          // accent-when-pinned tint was always on — a signal carrying nothing
+          // (Dave queried the odd colour, 2026-09-01). The picker's highlighted
+          // swatch shows the pin state instead.
+          foreground: Qt.darker(root.foreground, 1.8)
+          hoverColor: root.accent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.openBgPicker(wrow.model.num, wrow.model.name, wrow.model.bgPin)
+        }
+
+        PanelActionButton {
+          id: wpencil
+          visible: root.canRename
+          anchors.right: wsave.left
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.iconPencil
+          tooltipText: "Rename"
+          foreground: Qt.darker(root.foreground, 1.8)
+          hoverColor: root.accent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.wsEditing = root.wsEditing === wrow.index ? -1 : wrow.index
+        }
+
+        PanelActionButton {
+          id: wsave
+          anchors.right: wrestore.left
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.iconSave
+          tooltipText: "Save layout (HYPER+S)"
+          foreground: Qt.darker(root.foreground, 1.8)
+          hoverColor: root.accent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.wsSave(wrow.model.num)
+        }
+
+        PanelActionButton {
+          id: wrestore
+          // Same rule as the pencil: no delete on this machine, no gap for it.
+          anchors.right: root.canEditDesks ? wtrash.left : parent.right
+          anchors.rightMargin: root.canEditDesks ? 0 : Style.space(2)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.iconRestore
+          tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
+          foreground: Qt.darker(root.foreground, 1.8)
+          hoverColor: root.accent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          opacity: wrow.model.hasSnap ? 1 : 0.3
+          onClicked: if (wrow.model.hasSnap) root.wsRestore(wrow.model.num)
+        }
+
+        // Last in the row, apart from the everyday buttons; it asks before anything happens.
+        PanelActionButton {
+          id: wtrash
+          visible: root.canEditDesks
+          anchors.right: parent.right
+          anchors.rightMargin: Style.space(2)
+          anchors.verticalCenter: parent.verticalCenter
+          iconText: root.iconTrash
+          tooltipText: dlist.count > 1 ? "Delete workspace" : "The only workspace cannot be deleted"
+          foreground: Qt.darker(root.foreground, 1.8)
+          hoverColor: root.urgent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          opacity: dlist.count > 1 ? 1 : 0.3
+          onClicked: root.requestDeleteDesk(wrow.index)
+        }
       }
     }
   }
@@ -1554,25 +2033,39 @@ Panel {
       // Escape CANCELS (nothing written); Enter and click-away APPLY. While the tile
       // menu is up, Escape shuts it and Enter takes its choice; while the background
       // picker is up, both just hand back to the columns.
+      // While the "are you sure" card is up it takes the keys: Escape cancels, Enter takes
+      // the button that is lit, and h/l, the arrows and Tab move between the two buttons.
       onCloseRequested: {
-        if (iconDrag.active) iconDrag.cancel()
+        if (root.confirmOpen) root.closeConfirm(false)
+        else if (iconDrag.active) iconDrag.cancel()
+        else if (deskDrag.active) deskDrag.cancel()
         else if (root.tileMenuOpen) tileMenu.close()
         else if (root.bgPicking >= 0) root.bgPicking = -1
         else root.cancelAndClose()
       }
       onActivateRequested: {
-        if (iconDrag.busy) return
+        if (root.confirmOpen) { root.closeConfirm(confirmDialog.selectedIndex === 1); return }
+        if (iconDrag.busy || deskDrag.busy) return
         if (root.tileMenuOpen) root.menuChoose(root.menuCursor)
         else if (root.bgPicking >= 0) root.bgPicking = -1
         else root.acceptAndClose()
       }
-      // x (PanelKeyCatcher's delete key) hides/shows the selected row.
-      onDeleteRequested: if (root.bgPicking < 0 && !root.tileMenuOpen && !iconDrag.busy) root.toggleHidden(root.curLane, root.cursor)
+      onTabRequested: function(direction) {
+        if (root.confirmOpen) confirmDialog.selectedIndex = 1 - confirmDialog.selectedIndex
+      }
+      // x (PanelKeyCatcher's delete key) hides/shows the selected row — or, on a desk,
+      // asks to delete it.
+      onDeleteRequested: {
+        if (root.confirmOpen || root.bgPicking >= 0 || root.tileMenuOpen || iconDrag.busy || deskDrag.busy) return
+        if (root.curLane === "W") root.requestDeleteDesk(root.cursor)
+        else root.toggleHidden(root.curLane, root.cursor)
+      }
       // j/k (dy) walk a column, h/l (dx) hop between the two. In icon-only mode the
       // keys follow the layout: h/l walk the row, j/k hop between rows. In the tile
       // menu, j/k walk its choices.
       onMoveRequested: function(dx, dy) {
-        if (iconDrag.busy) return
+        if (root.confirmOpen) { if (dx !== 0) confirmDialog.selectedIndex = dx > 0 ? 1 : 0; return }
+        if (iconDrag.busy || deskDrag.busy) return
         if (root.tileMenuOpen) { if (dy !== 0) root.menuMove(dy); return }
         if (root.bgPicking >= 0) return
         if (root.iconsOnly) {
@@ -1587,7 +2080,7 @@ Panel {
       // icon-only mode H/L carry the tile along its row and J/K throw it to the row
       // above or below.
       onTextKey: function(t) {
-        if (iconDrag.busy) return
+        if (root.confirmOpen || iconDrag.busy || deskDrag.busy) return
         if (root.bgPicking >= 0 || root.tileMenuOpen) return
         if (root.iconsOnly) {
           if (t === "L") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
@@ -1602,11 +2095,24 @@ Panel {
         else if (t === "L") root.throwAcross(1)
       }
 
+      // Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y). While a desk is being renamed the text field
+      // keeps them for its own text.
+      Shortcut {
+        sequences: ["Ctrl+Z"]
+        enabled: root.opened && !root.confirmOpen && root.wsEditing < 0
+        onActivated: root.undo()
+      }
+      Shortcut {
+        sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
+        enabled: root.opened && !root.confirmOpen && root.wsEditing < 0
+        onActivated: root.redo()
+      }
+
       Reordering.ReorderController {
         id: iconDrag
         anchors.fill: parent
         z: 10
-        enabled: root.opened && root.iconsOnly && root.bgPicking < 0
+        enabled: root.opened && root.iconsOnly && root.bgPicking < 0 && !root.confirmOpen
         rows: [rowL, rowC, rowR]
         motionDuration: root.setting("reduce-motion", false) ? 0 : 160
         onDropped: function(fromRow, fromIndex, toRow, toIndex) {
@@ -1625,6 +2131,52 @@ Panel {
           height: iconDrag.previewHeight
           lifted: true
           Accessible.ignored: true
+        }
+      }
+
+      // The desk chips' own drag: rows holds the three desk rows (the mode shows one), so a
+      // desk can only land among the desks.
+      Reordering.ReorderController {
+        id: deskDrag
+        anchors.fill: parent
+        z: 10
+        enabled: root.opened && root.iconsOnly && root.bgPicking < 0 && !root.confirmOpen
+        rows: [deskRowL, deskRowC, deskRowR]
+        motionDuration: iconDrag.motionDuration
+        onDropped: function(fromRow, fromIndex, toRow, toIndex) { root.moveDesk(fromIndex, toIndex) }
+        onDragCancelled: keyCatcher.Accessible.announce("Drag cancelled", Accessible.Polite)
+        onBusyChanged: if (!busy) Qt.callLater(root.focusIconCursor)
+
+        // The lifted chip: the tile's lifted look, with the desk's name.
+        Rectangle {
+          visible: deskDrag.busy
+          x: deskDrag.previewX
+          y: deskDrag.previewY
+          width: deskDrag.previewWidth
+          height: deskDrag.previewHeight
+          radius: Style.cornerRadius
+          color: Qt.tint(Color.background, Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18))
+          border.width: Math.max(1, Style.space(1))
+          border.color: root.accent
+          Accessible.ignored: true
+
+          TextMetrics {
+            id: liftedCapBand
+            font: liftedLabel.font
+            text: "H"
+          }
+
+          Text {
+            id: liftedLabel
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: Math.round(parent.height / 2 - (liftedLabel.baselineOffset + liftedCapBand.tightBoundingRect.y
+                                               + liftedCapBand.tightBoundingRect.height / 2))
+            text: deskDrag.entry.name || ""
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            color: root.foreground
+          }
         }
       }
 
@@ -1975,6 +2527,7 @@ Panel {
             }
 
             DeskRow {
+              id: deskRowL
               align: "left"
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode === "1"
@@ -2001,6 +2554,7 @@ Panel {
             }
 
             DeskRow {
+              id: deskRowC
               align: "center"
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode === "2"
@@ -2027,6 +2581,7 @@ Panel {
             }
 
             DeskRow {
+              id: deskRowR
               align: "right"
               anchors.verticalCenter: parent.verticalCenter
               visible: root.mode === "3"
@@ -2259,7 +2814,7 @@ Panel {
           visible: false
           width: parent.width
           topPadding: Style.space(10)
-          text: "Drag to rearrange  ·  Right-click or F10 for options  ·  H/L reorder, J/K move between rows\nClick a desk to go there  ·  Enter applies  ·  Esc discards changes"
+          text: "Drag to rearrange  ·  Right-click or F10 for options  ·  H/L reorder, J/K move between rows\nClick a desk to go there  ·  Ctrl+Z undoes  ·  Enter applies  ·  Esc discards changes"
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           font: arrangementHelp.font
@@ -2274,17 +2829,37 @@ Panel {
           // Breathing room above, centred under the three columns (Dave, 2026-09-01).
           topPadding: Style.space(10)
           horizontalAlignment: Text.AlignHCenter
-          text: root.iconsOnly
-            ? iconDrag.active
-              ? "Release to place  ·  Esc cancels this drag"
-              : idleIconHelp.text
-            : "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Enter applies"
+          text: root.undoNote !== ""
+            ? root.undoNote + "  ·  Ctrl+Z undoes, Ctrl+Shift+Z redoes"
+            : root.iconsOnly
+              ? iconDrag.active || deskDrag.active
+                ? "Release to place  ·  Esc cancels this drag"
+                : idleIconHelp.text
+              : "drag rows, across too  ·  eye / x hides  ·  desks: click goes there,  saves,  restores  ·  Ctrl+Z undoes  ·  Enter applies"
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           color: root.iconsOnly ? root.foreground : root.muted
         }
+      }
+
+      // The "are you sure" card before a desk is deleted — the shell's own, as the menu's
+      // uninstall and the clipboard's clear use it — over the whole panel. Its keys are
+      // routed from the key catcher's handlers above.
+      ConfirmDialog {
+        id: confirmDialog
+        anchors.fill: parent
+        z: 20
+        opened: root.confirmOpen
+        message: root.confirmMessage
+        cancelText: "Cancel"
+        confirmText: "Delete"
+        foreground: root.foreground
+        selectedText: root.accent
+        fontFamily: root.fontFamily
+        onCanceled: root.closeConfirm(false)
+        onConfirmed: root.closeConfirm(true)
       }
 
       // The tile menu: the name, then the choices the eye and x offer in list mode. A

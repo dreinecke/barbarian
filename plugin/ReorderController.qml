@@ -59,12 +59,11 @@ Item {
       return
     }
     var center = row.mapFromItem(controller, previewX + previewWidth / 2, previewY).x
-    var remaining = row.count - (row === sourceRow ? 1 : 0)
-    var step = row.slotWidthFor(remaining + 1)
-    var start = row.startFor(remaining + 1)
-    var index = Math.max(0, Math.min(remaining, Math.floor((center - start) / step)))
+    var excluded = row === sourceRow ? sourceIndex : -1
+    var index = row.landingIndexAt(center, excluded, previewWidth)
     if (row === targetRow && index !== targetIndex) {
-      var boundary = start + (index > targetIndex ? targetIndex + 1 : targetIndex) * step
+      var boundary = row.landingBoundary(index > targetIndex ? targetIndex + 1 : targetIndex,
+                                         excluded, previewWidth)
       if (Math.abs(center - boundary) < row.hysteresis) return
     }
     targetRow = row

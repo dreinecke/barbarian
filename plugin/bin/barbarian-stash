@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# barbarian-stash save <file> <key> | put <key> <file> — keep a copy of a file so Ctrl+Z can put it
+# back.
+#
+# Barbarian's undo for "Save layout" (Dave, 2026-09-19: "ctrl-z to undo the last change you made to
+# anything"): a save overwrites the desk's recording, so the panel stashes the recording first and
+# puts it back on undo. `save` also remembers that there was NO file, and `put` then deletes the file,
+# so undoing a desk's first recording leaves it with none again.
+#
+# The stash lives under $XDG_RUNTIME_DIR, which is cleared at logout — the undo history is the open
+# panel's, never older.
+set -euo pipefail
+
+STASH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/barbarian-undo"
+mkdir -p "$STASH"
+
+case "${1:-}" in
+  save)
+    file="${2:?usage: barbarian-stash save <file> <key>}"; key="${3:?}"
+    if [ -e "$file" ]; then cp -- "$file" "$STASH/$key"; rm -f "$STASH/$key.absent"
+    else rm -f "$STASH/$key"; : > "$STASH/$key.absent"; fi
+    ;;
+  put)
+    key="${2:?usage: barbarian-stash put <key> <file>}"; file="${3:?}"
+    if [ -e "$STASH/$key" ]; then mkdir -p "$(dirname "$file")"; cp -- "$STASH/$key" "$file"
+    elif [ -e "$STASH/$key.absent" ]; then rm -f -- "$file"
+    else echo "barbarian-stash: nothing stashed as $key" >&2; exit 1; fi
+    ;;
+  *)
+    echo "usage: barbarian-stash save <file> <key> | put <key> <file>" >&2; exit 1 ;;
+esac

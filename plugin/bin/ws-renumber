@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""ws-renumber — give the desks a new order, and delete desks, without breaking anything.
+
+Barbarian's desk reordering and deleting (Dave, 2026-09-19: "such workspace reordering must take
+care of everything behind the scenes to ensure that nothing breaks"). The panel stages the new
+order and closes; this script, run detached, does the rest in one pass.
+
+    ws-renumber --order 1,3,2,4,6,7,8 --delete 5:4
+
+--order lists the surviving desks by their CURRENT numbers, in their new order. --delete names a
+desk to remove and the desk (current number, one that survives) its windows move to. The desks
+keep the numbers they had between them: the Nth desk in the new order takes the Nth smallest of
+those numbers, so after a delete the numbers close up and SUPER+N still reaches the Nth desk on
+the bar. A workspace that is not a desk (the workout's 9, a second screen's 10) is never touched.
+
+⚠️ A DESK IS RENUMBERED IN PLACE, NOT REBUILT. `hl.dsp.workspace.change_id` gives a workspace a
+new number with its windows and its whole tiling tree untouched, so a desk arrives at its new
+number looking exactly as it did. Moving the windows across instead would rebuild every desk's
+split layout from scratch.
+
+⚠️ THREE THINGS FIGHT change_id, AND EACH HAS ITS OWN STEP BELOW. Measured on Hyprland 0.56.2 and
+Quickshell 0.3.0, 2026-09-19:
+  1. A persistent desk whose number is vacated is re-created, empty, at once — so "3 → 1003, then
+     4 → 3" fails with "ID is taken". An eval'd `persistent = false` rule for every number in play
+     lets the numbers go (an empty desk is destroyed on the spot, which is fine: the config names it
+     again at the reload).
+  2. Quickshell (the bar) ignores the changeworkspaceid event, and no refresh it offers to QML ever
+     corrects an id. Only a Hyprland config reload makes it re-read everything, matched by number.
+     So the desks are parked at spare numbers, the config is reloaded (the bar drops the stale
+     desks and learns the parked ones), then they go to their final numbers and the config is
+     reloaded again (the bar drops the parked ones and learns the final ones). One reload leaves the
+     bar counting the windows of one desk against another.
+  3. change_id forgets a name that came from a rule, and a rule cannot rename a workspace that
+     already exists. So every desk is renamed explicitly, last.
+Hyprland's own config auto-reload is paused for the whole pass: the hook below rewrites config
+files, and an unplanned reload in the middle would re-create desks under the parked ones.
+
+⚠️ THE MACHINE'S OWN FILES ARE THE HOOK'S JOB. Every executable in
+~/.config/omarchy/hooks/workspaces-renumbered.d/ (and ~/.config/omarchy/hooks/workspaces-renumbered
+itself — the layout `omarchy-hook` uses) runs first, with one argument per changed desk:
+    move:OLD:NEW      the desk numbered OLD is now NEW
+    delete:OLD:NEW    the desk numbered OLD is gone; its windows are on the desk now numbered NEW
+The hooks run BEFORE anything live changes, and a hook that fails stops the whole pass with nothing
+on screen changed — `omarchy-hook` itself cannot be used for this, because it swallows failures.
+
+What this script moves itself, because Barbarian or stock Omarchy own it:
+  · the wallpaper pins, ws<N>.<ext> in every theme's folder under workspace-backgrounds/
+  · the Auto wallpaper's image number per desk (workspace-backgrounds/auto-index, read by
+    per-workspace-wallpaper.sh), so an Auto desk keeps its picture wherever it moves
+  · stock Omarchy's per-desk tiling layout (SUPER+L), ~/.local/state/omarchy/workspace-layouts/<N>.lua
+
+--dry-run prints the plan and changes nothing. For tests, WS_RENUMBER_BACKGROUNDS,
+WS_RENUMBER_LAYOUTS and WS_RENUMBER_HOOKS point it at other folders, and
+HYPRLAND_INSTANCE_SIGNATURE at another Hyprland.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+BACKGROUNDS = Path(os.environ.get("WS_RENUMBER_BACKGROUNDS")
+                   or HOME / ".config/omarchy/workspace-backgrounds")
+LAYOUTS = Path(os.environ.get("WS_RENUMBER_LAYOUTS")
+               or HOME / ".local/state/omarchy/workspace-layouts")
+HOOKS = Path(os.environ.get("WS_RENUMBER_HOOKS") or HOME / ".config/omarchy/hooks")
+HOOK_NAME = "workspaces-renumbered"
+LOG = HOME / ".local/state/omarchy/barbarian-renumber.log"
+# How long a config reload is given to reach the bar before the next step leans on it.
+SETTLE = float(os.environ.get("WS_RENUMBER_SETTLE") or "1.0")
+
+
+class Failure(Exception):
+    pass
+
+
+# Set once the hooks have rewritten the machine's config, so a failure after that point says so:
+# the config then describes the new order while the running desks may not.
+config_rewritten = [False]
+
+
+def log(message):
+    line = time.strftime("%Y-%m-%d %H:%M:%S ") + message
+    print(line)
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        # Kept short: it is for reading after a failure, not a history.
+        if LOG.exists() and LOG.stat().st_size > 200_000:
+            LOG.write_text("\n".join(LOG.read_text().splitlines()[-400:]) + "\n")
+        with LOG.open("a") as out:
+            out.write(line + "\n")
+    except OSError:
+        pass
+
+
+# ── Hyprland ─────────────────────────────────────────────────────────────────
+
+def hyprctl(*args):
+    result = subprocess.run(["hyprctl", *args], capture_output=True, text=True)
+    return result.returncode, (result.stdout or "") + (result.stderr or "")
+
+
+def query(what):
+    code, out = hyprctl(what, "-j")
+    if code != 0:
+        raise Failure(f"hyprctl {what} failed: {out.strip()}")
+    return json.loads(out)
+
+
+def lua(kind, code):
+    """⚠️ hyprctl SAYS `ok` AND EXITS 0 WHEN THE LUA INSIDE FAILED — "ID is taken" came back as a
+    warning with exit 0 — so the text is checked as well as the code."""
+    status, out = hyprctl(kind, code)
+    text = out.strip()
+    if status != 0 or re.search(r"error|warning|taken|no such|bad id", text, re.I):
+        raise Failure(f"{code} → {text or status}")
+    return text
+
+
+def dispatch(code):
+    return lua("dispatch", code)
+
+
+def lua_string(text):
+    return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def evaluate(code):
+    return lua("eval", code)
+
+
+def set_autoreload_paused(paused):
+    evaluate("hl.config({ misc = { disable_autoreload = %s } })" % ("true" if paused else "false"))
+
+
+def autoreload_paused():
+    code, out = hyprctl("getoption", "misc:disable_autoreload", "-j")
+    try:
+        return bool(json.loads(out).get("bool"))
+    except ValueError:
+        return False
+
+
+def config_errors():
+    return hyprctl("configerrors")[1].strip()
+
+
+def reload(errors_before):
+    """⚠️ A reload puts the config's own disable_autoreload back, so the pause is re-applied at
+    once — the rest of the pass still needs it. A config the hook broke still reloads "ok", so the
+    error list is compared with the one from before the pass."""
+    status, out = hyprctl("reload")
+    if status != 0:
+        raise Failure(f"hyprctl reload → {out.strip()}")
+    set_autoreload_paused(True)
+    time.sleep(SETTLE)
+    errors = config_errors()
+    if errors and errors != errors_before:
+        raise Failure("the Hyprland config no longer loads cleanly: " + errors.splitlines()[0])
+
+
+def unsettle_focus(n, name, reloads):
+    """⚠️ THE BAR LOSES THE FOCUSED DESK ACROSS A RELOAD UNLESS ITS NAME CHANGED. Quickshell only
+    re-points a screen's active desk when the name Hyprland reports differs from the one it holds;
+    otherwise it keeps its old object, deletes it a moment later as a number that no longer exists,
+    and shows no desk as focused until the next switch. Zero-width spaces make the name differ
+    without looking any different — one more for each reload, since the bar already holds the name
+    the previous one gave it — and the rename pass at the end puts the real name back."""
+    dispatch(f'hl.dsp.workspace.rename({{ workspace = "{n}", '
+             f'name = {lua_string(name + chr(0x200b) * reloads)} }})')
+
+
+def let_go(numbers):
+    for n in sorted(numbers):
+        evaluate(f'hl.workspace_rule({{ workspace = "{n}", persistent = false }})')
+
+
+def change_id(old, new):
+    dispatch(f'hl.dsp.workspace.change_id({{ workspace = "{old}", id = {new} }})')
+
+
+# ── the plan ─────────────────────────────────────────────────────────────────
+
+def parse_plan(order_arg, delete_args):
+    order = [int(n) for n in order_arg.split(",") if n.strip() != ""]
+    merges = {}
+    for spec in delete_args:
+        old, into = (int(part) for part in spec.split(":"))
+        merges[old] = into
+    everyone = order + list(merges)
+    if not order:
+        raise Failure("At least one desk has to stay.")
+    if len(set(everyone)) != len(everyone):
+        raise Failure(f"A desk is named twice: order {order}, deleted {sorted(merges)}")
+    if any(n < 1 for n in everyone):
+        raise Failure("Desk numbers start at 1.")
+    for old, into in merges.items():
+        if into not in order:
+            raise Failure(f"Desk {old}'s windows are meant for desk {into}, which is not staying.")
+    slots = sorted(everyone)[:len(order)]
+    new_of = {old: slots[i] for i, old in enumerate(order)}
+    moves = {old: new for old, new in new_of.items() if old != new}
+    deletes = {old: new_of[into] for old, into in merges.items()}
+    return order, merges, new_of, moves, deletes
+
+
+# ── the hook ─────────────────────────────────────────────────────────────────
+
+def hook_scripts():
+    found = []
+    single = HOOKS / HOOK_NAME
+    if single.is_file():
+        found.append(single)
+    folder = HOOKS / (HOOK_NAME + ".d")
+    if folder.is_dir():
+        found += sorted(p for p in folder.iterdir() if p.is_file() and not p.name.endswith(".sample"))
+    return found
+
+
+def run_hooks(moves, deletes):
+    args = [f"move:{old}:{new}" for old, new in sorted(moves.items())]
+    args += [f"delete:{old}:{new}" for old, new in sorted(deletes.items())]
+    for script in hook_scripts():
+        log(f"hook {script} {' '.join(args)}")
+        result = subprocess.run(["bash", str(script), *args], capture_output=True, text=True)
+        for line in (result.stdout + result.stderr).strip().splitlines():
+            log(f"  {line}")
+        if result.returncode != 0:
+            why = (result.stderr or result.stdout).strip().splitlines()
+            raise Failure(f"{script.name} refused: {why[-1] if why else 'exit ' + str(result.returncode)}")
+
+
+# ── files Barbarian and stock Omarchy key by desk number ─────────────────────
+
+def renumber_named(folder, pattern, name_for, moves, deletes):
+    """Rename files matching `pattern` (group 1 = the desk number) through a spare name first, so
+    two desks trading numbers never overwrite each other."""
+    if not folder.is_dir():
+        return
+    parked = []
+    for path in sorted(folder.iterdir()):
+        found = re.fullmatch(pattern, path.name)
+        if not found:
+            continue
+        n = int(found.group(1))
+        if n in deletes:
+            path.unlink()
+            log(f"removed {path}")
+        elif n in moves:
+            spare = path.with_name(".renumber-" + path.name)
+            os.replace(path, spare)
+            parked.append((spare, name_for(path.name, moves[n]), n))
+    for spare, final, n in parked:
+        target = spare.with_name(final)
+        os.replace(spare, target)
+        log(f"moved {folder.name}/{spare.name[len('.renumber-'):]} → {final}")
+        yield target, n
+
+
+def renumber_pins(moves, deletes):
+    if not BACKGROUNDS.is_dir():
+        return
+    for theme in sorted(p for p in BACKGROUNDS.iterdir() if p.is_dir() and p.name != "solids"):
+        for _ in renumber_named(theme, r"ws(\d+)\.[A-Za-z0-9]+",
+                                lambda name, new: re.sub(r"^ws\d+", f"ws{new}", name), moves, deletes):
+            pass
+
+
+def renumber_auto_index(new_of, moves, deletes):
+    """Desk N's Auto wallpaper is the theme's Nth image unless this file says otherwise, so a desk
+    that moves carries its image number with it and an Auto desk keeps its picture."""
+    if not moves and not deletes:
+        return
+    path = BACKGROUNDS / "auto-index"
+    index = {}
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                index[int(parts[0])] = int(parts[1])
+    changed = {}
+    for old, new in new_of.items():
+        image = index.get(old, old)
+        if image != new:
+            changed[new] = image
+    for n, image in index.items():
+        if n not in new_of and n not in deletes:
+            changed.setdefault(n, image)
+    if not BACKGROUNDS.is_dir():
+        return
+    text = "".join(f"{n} {image}\n" for n, image in sorted(changed.items()))
+    if text == "":
+        if path.exists():
+            path.unlink()
+        return
+    tmp = path.with_name(".auto-index.tmp")
+    tmp.write_text("# desk number → which of the theme's images is its Auto wallpaper\n" + text)
+    os.replace(tmp, path)
+    log(f"auto-index: {text.strip().replace(chr(10), ', ')}")
+
+
+def renumber_layouts(moves, deletes):
+    for path, old in renumber_named(LAYOUTS, r"(\d+)\.lua", lambda name, new: f"{new}.lua",
+                                    moves, deletes):
+        text = path.read_text()
+        path.write_text(re.sub(r'workspace\s*=\s*"%d"' % old, f'workspace = "{moves[old]}"', text))
+
+
+# ── the live desks ───────────────────────────────────────────────────────────
+
+def plain_name(workspace):
+    name = str(workspace.get("name") or "")
+    return name == "" or name == str(workspace["id"])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--order", required=True)
+    parser.add_argument("--delete", action="append", default=[])
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    order, merges, new_of, moves, deletes = parse_plan(args.order, args.delete)
+    log(f"plan: order {order} · moves {moves} · deleted {deletes}")
+    if not moves and not deletes:
+        log("nothing to do")
+        return
+    if args.dry_run:
+        for old, new in sorted(moves.items()):
+            print(f"move:{old}:{new}")
+        for old, new in sorted(deletes.items()):
+            print(f"delete:{old}:{new}")
+        return
+
+    workspaces = {w["id"]: w for w in query("workspaces")}
+    windows = query("clients")
+    focused = query("activeworkspace").get("id")
+    names = {old: (str(new_of[old]) if old not in workspaces or plain_name(workspaces[old])
+                   else workspaces[old]["name"]) for old in order}
+    expected = {}   # window address → the desk number it must end up on
+    for c in windows:
+        n = c["workspace"]["id"]
+        if n in new_of:
+            expected[c["address"]] = new_of[n]
+        elif n in merges:
+            expected[c["address"]] = new_of[merges[n]]
+
+    was_paused = autoreload_paused()
+    errors_before = config_errors()
+    set_autoreload_paused(True)
+    try:
+        # Machine config first: if a hook refuses, nothing on screen has changed.
+        run_hooks(moves, deletes)
+        config_rewritten[0] = bool(hook_scripts())
+        renumber_pins(moves, deletes)
+        renumber_auto_index(new_of, moves, deletes)
+        renumber_layouts(moves, deletes)
+
+        for old, into in merges.items():
+            for c in windows:
+                if c["workspace"]["id"] == old:
+                    dispatch(f'hl.dsp.window.move({{ workspace = "{into}", follow = false, '
+                             f'window = "address:{c["address"]}" }})')
+            if focused == old:
+                dispatch(f'hl.dsp.focus({{ workspace = "{into}" }})')
+            log(f"desk {old}: windows moved to desk {into}")
+
+        in_play = set(moves) | set(moves.values()) | set(deletes)
+        let_go(in_play)
+        alive = {w["id"] for w in query("workspaces")}
+        spare_base = max([10000] + [n + 1 for n in alive])
+        parked = {}
+        for old, new in sorted(moves.items()):
+            if old in alive:
+                parked[old] = spare_base + new
+                change_id(old, parked[old])
+        log(f"parked {parked}")
+
+        standing = merges.get(focused, focused)
+        if standing in parked:
+            unsettle_focus(parked[standing], names[standing], 1)
+        reload(errors_before)
+        if parked:
+            let_go(in_play)
+            for old, spare in sorted(parked.items()):
+                change_id(spare, moves[old])
+            if standing in parked:
+                unsettle_focus(moves[standing], names[standing], 2)
+            reload(errors_before)
+
+        for old in order:
+            dispatch(f'hl.dsp.workspace.rename({{ workspace = "{new_of[old]}", '
+                     f'name = {lua_string(names[old])} }})')
+        # The wallpaper engine repaints on a desk SWITCH, and the pins moved under the desk on
+        # screen — its picture was the right one, but a desk that was focused for a deleted one
+        # was painted from its old number mid-pass. One repaint from where things now stand.
+        engine = BACKGROUNDS / "per-workspace-wallpaper.sh"
+        if os.access(engine, os.X_OK):
+            subprocess.run([str(engine), "apply"], capture_output=True)
+    finally:
+        set_autoreload_paused(was_paused)
+
+    live = {c["address"]: c["workspace"]["id"] for c in query("clients")}
+    lost = [f"{address} on {live.get(address)} not {want}" for address, want in expected.items()
+            if address in live and live[address] != want]
+    if lost:
+        raise Failure("windows on the wrong desk: " + "; ".join(lost))
+    log("done")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Failure as problem:
+        log(f"FAILED: {problem}")
+        body = str(problem)
+        if config_rewritten[0]:
+            body += ("\n\nYour config already has the new order, so logging out and back in "
+                     "brings the desks into line.")
+        subprocess.run(["notify-send", "-u", "critical", "Barbarian could not rearrange the desks",
+                        body], capture_output=True)
+        sys.exit(1)

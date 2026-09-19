@@ -93,7 +93,23 @@ wallpaper_for() {
   local -a list
   mapfile -t list < <(theme_backgrounds)
   [ "${#list[@]}" -gt 0 ] || return 0
-  printf '%s' "${list[$(( (ws - 1) % ${#list[@]} ))]}"
+  local image
+  image="$(auto_image "$ws")"
+  printf '%s' "${list[$(( (image - 1) % ${#list[@]} ))]}"
+}
+
+# Which of the theme's images desk N shows on Auto: the Nth, unless the desk has been moved.
+# ⚠️ A MOVED DESK TAKES ITS IMAGE NUMBER WITH IT. Barbarian's desk reordering (bin/ws-renumber,
+# 2026-09-19) writes `auto-index` here — lines of "desk image" — so an Auto desk that moves from 5
+# to 3 keeps the picture it had instead of taking the one that belonged to its new number.
+auto_image() {
+  local ws="$1" desk image
+  if [ -f "$HERE/auto-index" ]; then
+    while read -r desk image; do
+      [ "$desk" = "$ws" ] && case "$image" in ''|*[!0-9]*) ;; *) printf '%s' "$image"; return 0 ;; esac
+    done < "$HERE/auto-index"
+  fi
+  printf '%s' "$ws"
 }
 
 # ⚰️ THE ACTIVE-WINDOW BORDER HALF WAS REMOVED 2026-08-30, on Dave's word: the border is

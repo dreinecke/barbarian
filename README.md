@@ -2,7 +2,9 @@
 
 Barbarian is a panel for the [Omarchy](https://omarchy.org) Quickshell bar: open it
 with a keybind and reorder, re-lane or hide every widget on the bar's right side by
-dragging (or with `j`/`k` + `J`/`K`), and give each desk its own wallpaper.
+dragging (or with `j`/`k` + `J`/`K`), reorder and delete workspaces (desks), and give
+each desk its own wallpaper. `Ctrl+Z` undoes any change made while the panel is open,
+and `Ctrl+Shift+Z` (or `Ctrl+Y`) redoes it.
 
 The grid button beside the tick and cross switches to **icon-only mode**: three rows
 in the bar's own order, each placed as it sits on the bar — the left lane's glyphs at
@@ -15,9 +17,36 @@ earlier staged changes. Hover for the name; right-click or press `F10` for the m
 moves, hides or shows it
 (and deletes a spacer). A widget parked off the bar wears the theme's urgent colour,
 and hiding one sends it to its lane's far end so the hidden ones sit together. Click a desk chip to go there; right-click it for background,
-rename, save and restore. The keys follow the layout — `h`/`l` walk a row, `j`/`k`
-hop rows, `H`/`L` carry, `J`/`K` throw. The choice is remembered in
+rename, save, restore, move and delete; drag it along its row to reorder the desks. The keys
+follow the layout — `h`/`l` walk a row, `j`/`k` hop rows (the desks' row included), `H`/`L`
+carry, `J`/`K` throw, `x` hides a widget or deletes a desk. The choice is remembered in
 `~/.local/state/omarchy/barbarian.json`.
+
+## Reordering and deleting desks
+
+Drag a desk (either view), carry it with the keys, or use its menu; delete one from its menu
+(icon view) or its bin button (list view). Deleting asks first, and says where the desk's
+windows go: the desk before it, or the one after it when it is the first. Both are staged with
+the rest of the panel's changes, so Escape still throws them away.
+
+Applying renumbers the desks so the Nth desk on the bar is desk N again, and `SUPER+N` still
+reaches it. `plugin/bin/ws-renumber` does it in one pass after the panel closes:
+
+- each desk is given its new number in place (Hyprland's `workspace.change_id`), so its windows
+  and their tiling stay exactly as they were;
+- wallpaper pins move with their desk in every theme, an Auto desk keeps its picture, and stock
+  Omarchy's per-desk tiling layout (`SUPER+L`) moves with it too;
+- every executable in `~/.config/omarchy/hooks/workspaces-renumbered.d/` runs first, with one
+  `move:OLD:NEW` or `delete:OLD:NEW` argument per changed desk (for a deleted desk, `NEW` is the
+  desk its windows went to). That is where a machine's own config — window rules that name a desk
+  by number, scripts that open things on a desk — follows along. A hook that exits non-zero
+  stops the whole pass with nothing changed.
+
+Which workspaces are desks: the persistent ones when the Hyprland config declares any, otherwise
+every workspace from 1 to 10 that exists. A config that declares persistent desks would put them
+back at the next login, so on such a machine Barbarian offers reordering and deleting only once a
+`workspaces-renumbered` hook is installed. A failure is reported as a notification, and the last
+passes are logged in `~/.local/state/omarchy/barbarian-renumber.log`.
 
 The drag preview is independent of the lane layout: pointer movement never reorders the
 model. Neighbors and the landing animate over 160 ms; the held tile has no easing or
@@ -69,12 +98,17 @@ restart is required to load edits reliably. The installer defers writes while lo
 ## Verify drag behavior
 
 The native Qt Quick tests exercise the actual pointer handler, animated displacement,
-drop geometry, cancellation, and same-row and cross-row model commits without changing
-the running bar:
+drop geometry, cancellation, and same-row and cross-row model commits — for the icon tiles
+and the desk chips — without changing the running bar:
 
 ```sh
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests -o -,txt
+python3 tests/test_ws_renumber.py
 ```
+
+The second covers the desk renumbering's arithmetic and the files it moves. Its live half —
+renumbering, reloading, renaming — was checked against a second Hyprland running nested on a
+hidden workspace, never the session in use.
 
 ## License
 

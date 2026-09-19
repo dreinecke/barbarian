@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# ws-bg-restore <image-path> [N...] — undo a ws-bg-remove: take the image back out of the trash
+# and pin it to desks N... again.
+#
+# Barbarian's Ctrl+Z (Dave, 2026-09-19: "ctrl-z to undo the last change you made to anything").
+# ws-bg-remove trashes the file (`gio trash`) rather than deleting it precisely so a wrong click can
+# be undone, and the panel passes the desks that were pinned to it, which ws-bg-remove unpinned.
+# The newest trashed copy from that path is the one restored.
+set -euo pipefail
+
+IMG="${1:?usage: ws-bg-restore <image-path> [N...]}"
+shift
+HERE="$(dirname "$(readlink -f "$0")")"
+
+if [ ! -e "$IMG" ]; then
+  uri="$(gio trash --list 2>/dev/null | awk -F'\t' -v want="$IMG" '$2 == want { hit = $1 } END { print hit }')"
+  [ -n "$uri" ] || { echo "ws-bg-restore: $IMG is not in the trash" >&2; exit 1; }
+  gio trash --restore "$uri"
+fi
+
+for n in "$@"; do
+  "$HERE/ws-bg-pick" "$n" "$IMG"
+done
