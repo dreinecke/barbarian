@@ -28,6 +28,11 @@ ENGINE_DST="$HOME/.config/omarchy/workspace-backgrounds/per-workspace-wallpaper.
 
 session_locked() {
   local status
+  # ⚠️ NO SHELL RUNNING MEANS NOTHING TO CRASH — and it is the case `omarchy-shell lock status`
+  # cannot answer: over a plain ssh login it prints "OMARCHY_PATH is not set", which the
+  # fall-through below read as a lock, so a stranger installing over ssh had every file deferred
+  # with a message blaming a lock that did not exist (found on a stock machine, 2026-09-20).
+  pgrep -u "$(id -u)" -x quickshell >/dev/null 2>&1 || return 1
   status="$(omarchy-shell lock status 2>/dev/null)"
   case "$status" in
     *'"sessionLocked":true'*)  return 0 ;;   # a lock is up
@@ -64,7 +69,7 @@ install_plugin_file m755 "$HERE/engine/per-workspace-wallpaper.sh" "$ENGINE_DST"
 # The engine is normally started by a user service or a theme-set hook on the host
 # machine; it is safe to install everywhere and started where the wiring exists.
 if [ "$DEFERRED" -gt 0 ]; then
-  echo "barbarian: $DEFERRED file(s) deferred — session locked or unreadable; re-run unlocked"
+  echo "barbarian: $DEFERRED file(s) deferred — the screen is locked (or the lock cannot be read); re-run unlocked"
 else
   echo "barbarian: installed to $PLUGIN_DIR and $ENGINE_DST"
   echo "barbarian: restart the shell while unlocked to load code changes: omarchy restart shell"

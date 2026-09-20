@@ -66,8 +66,19 @@ if os.path.exists(side):
 
 # The workspaces strip moves whole, driven only by the WS directive — pull it out of
 # every lane and the sidecar before anything else looks at the rows.
+#
+# ⚠️ ONLY WHEN IT IS CHANGING LANE. A strip already in the lane the panel asks for is left
+# exactly where it stands, among the entries the panel never lists. It used to be pulled out
+# and put back at the head of its lane, which on a stock Omarchy bar (left = the menu button,
+# then the workspaces) moved the menu button out of the corner on the first Enter, with no bar
+# change asked for. Found on a stock 4.0.4 machine, 2026-09-20.
 ws_entry = None
+ws_stays = False
 if ws_id:
+    for ln in LANES:
+        if KEYS[ln] == ws_place and any(e.get("id") == ws_id for e in sections[ln]):
+            ws_stays = True
+if ws_id and not ws_stays:
     for ln in LANES:
         keep = []
         for e in sections[ln]:
@@ -131,7 +142,7 @@ for ln in LANES:
     leftovers = [e for e in sections[ln]
                  if not any(e is o for o in named) and not any(e is d for d in deleted)]
     lane_rows = ordered[ln] + leftovers
-    if ws_id and ws_place == KEYS[ln]:
+    if ws_id and not ws_stays and ws_place == KEYS[ln]:
         lane_rows = [ws_entry] + lane_rows
     layout[KEYS[ln]] = lane_rows
     for row in parked_in[ln]:
