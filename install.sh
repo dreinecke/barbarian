@@ -26,6 +26,16 @@ PLUGIN_ID="tinkerbell.arrange"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 ENGINE_DST="$HOME/.config/omarchy/workspace-backgrounds/per-workspace-wallpaper.sh"
 
+# A plain ssh login has neither of these, and without them the lock cannot be read at all — the
+# shell's own `omarchy-shell` refuses with "OMARCHY_PATH is not set" (2026-09-20). Defaults, not
+# overrides: a real session's values are left alone.
+[ -n "${OMARCHY_PATH:-}" ] || export OMARCHY_PATH=/usr/share/omarchy
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  for sock in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/wayland-[0-9]*; do
+    [ -S "$sock" ] && export WAYLAND_DISPLAY="$(basename "$sock")" && break
+  done
+fi
+
 session_locked() {
   local status
   # ⚠️ NO SHELL RUNNING MEANS NOTHING TO CRASH — and it is the case `omarchy-shell lock status`
