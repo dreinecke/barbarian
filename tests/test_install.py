@@ -58,7 +58,8 @@ class Install(unittest.TestCase):
 
     def run_install(self, *args):
         env = {"HOME": str(self.home), "PATH": f"{self.bin}:{os.environ['PATH']}",
-               "CALLS": str(self.calls), "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "/tmp")}
+               "CALLS": str(self.calls), "COUNT": str(self.tmp / "count"),
+               "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "/tmp")}
         return subprocess.run([str(SCRIPT), *args], capture_output=True, text=True, env=env)
 
     def called(self, name):
@@ -112,6 +113,24 @@ class Install(unittest.TestCase):
         self.assertIn("Panel.qml", self.installed())
         self.assertTrue((self.home / ".local/state/omarchy/barbarian-restart-owed").exists())
         self.assertTrue(self.called("systemd-run"))
+
+    def test_a_panel_file_in_before_the_screen_went_up_is_still_owed_its_restart(self):
+        """The panel opens part way through: what went in first must not be left uncompiled."""
+        self.stub("hyprctl", 'n=$(cat "$COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$COUNT"\n'
+                             'if [ "$n" -gt 4 ]; then echo \'[{"namespace": "omarchy-keyboard-panel"}]\'; '
+                             'else echo "[]"; fi')
+        result = self.run_install()
+        stamp = self.home / ".local/state/omarchy/barbarian-restart-owed"
+        self.assertIn("Panel.qml", self.installed())         # the first four files went in
+        self.assertNotIn("ws-renumber", self.installed())    # the rest are waiting
+        self.assertTrue(stamp.exists(), result.stdout)
+        self.assertTrue(self.called("systemd-run"))
+        # The waiter's own run finishes both halves of the job.
+        self.stub("hyprctl", 'echo "[]"')
+        self.run_install("--when-unlocked")
+        self.assertIn("ws-renumber", self.installed())
+        self.assertTrue(self.called("omarchy-restart-shell"))
+        self.assertFalse(stamp.exists())
 
     def test_the_wallpaper_engine_unit_is_restarted_when_the_engine_changes(self):
         unit = self.home / ".config/systemd/user/some-wallpaper.service"

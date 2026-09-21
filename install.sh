@@ -171,6 +171,13 @@ RESTART_OWED=0
 [ "$PLUGIN_CHANGED" = 1 ] && RESTART_OWED=1
 
 if [ "$DEFERRED" -gt 0 ]; then
+  # The screen went up part way through: some files are in, the rest are not. A panel file among
+  # the ones that went in is owed a restart the waiter's own run would not know about, because by
+  # then only the files it has left to write look changed.
+  if [ "$PLUGIN_CHANGED" = 1 ]; then
+    mkdir -p "$(dirname "$RESTART_STAMP")"
+    : > "$RESTART_STAMP"
+  fi
   arm_waiter
   echo "barbarian: $DEFERRED file(s) held back — the screen is locked or the panel is open; they go in the moment it clears"
 elif [ "$RESTART_OWED" = 1 ]; then
