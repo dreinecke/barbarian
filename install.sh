@@ -18,13 +18,30 @@
 #    Unreadable means locked — a wrong "locked" costs a few hours' delay; a wrong
 #    "unlocked" costs the crash. The full history of these rules lives in the
 #    machine repo this was extracted from (dreinecke/enterprise, private).
-#    This reload may reuse cached QML. After installing code changes, a full
-#    `omarchy restart shell` while unlocked is required to activate them reliably.
+#
+# ⚠️ A WRITE IS NOT A RELOAD. Quickshell logs "Local plugin changed, reloading" and goes on
+#    running the QML it compiled before, so a changed panel is only on screen after
+#    `omarchy-restart-shell`. This installer does that restart itself.
+#
+# ⚠️ A CHANGE INSTALLS ITSELF. Every commit that touches the plugin, an engine, a hook or this
+#    file runs this installer (hooks/post-commit), and nothing is left to be run by hand — Dave,
+#    2026-09-21: "Please auto update always upon unlock." So a run that cannot write, because the
+#    screen is locked or Barbarian's own panel is on screen, ARMS A WAITER: a transient systemd
+#    user service running `install.sh --when-unlocked`, which polls and finishes the job the
+#    moment the screen is free. Nothing polls while nothing is waiting, and a second run adds no
+#    second waiter. The gap left: a commit made while locked, then a reboot before the unlock —
+#    the next commit, a run by hand, or the machine's daily self-heal picks it up.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ID="tinkerbell.arrange"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 ENGINE_DST="$HOME/.config/omarchy/workspace-backgrounds/per-workspace-wallpaper.sh"
+WAIT_UNIT="barbarian-install-pending"
+# A plugin file written while the screen is locked cannot be compiled then: restarting Quickshell
+# would unlock the machine. This file says a restart is owed, and the next free run does it.
+RESTART_STAMP="$HOME/.local/state/omarchy/barbarian-restart-owed"
+UNLOCK_POLL=10
+UNLOCK_GIVE_UP=21600      # six hours of locked screen, then leave it to the next run
 
 # A plain ssh login has neither of these, and without them the lock cannot be read at all — the
 # shell's own `omarchy-shell` refuses with "OMARCHY_PATH is not set" (2026-09-20). Defaults, not
@@ -52,15 +69,82 @@ session_locked() {
   [ "$(omarchy-shell lock isLocked 2>/dev/null)" != "false" ]
 }
 
+# The panel being installed may be the one on screen: writing its files reloads the plugin under
+# the user's hands, and the restart below would take the panel away mid-gesture. An unreachable
+# hyprctl (ssh, no session) means no panel — never wait on a question that cannot be answered.
+panel_open() {
+  hyprctl layers -j 2>/dev/null | grep -q omarchy-keyboard-panel
+}
+
+# A desk renumber runs detached, outliving the panel, and spends a few seconds with the desks
+# parked at spare ids between two config reloads. Nothing is installed into that window.
+renumbering() {
+  pgrep -u "$(id -u)" -f '[b]in/ws-renumber' >/dev/null 2>&1
+}
+
+busy() { session_locked || panel_open || renumbering; }
+
+# `--when-unlocked` is the waiter: wait for the screen (and the panel, and any renumber), then
+# install as usual.
+if [ "${1:-}" = "--when-unlocked" ]; then
+  waited=0
+  while busy; do
+    if [ "$waited" -ge "$UNLOCK_GIVE_UP" ]; then
+      echo "barbarian: six hours locked or busy; the next commit, run or self-heal installs it"
+      exit 0
+    fi
+    sleep "$UNLOCK_POLL"
+    waited=$((waited + UNLOCK_POLL))
+  done
+fi
+
+arm_waiter() {
+  command -v systemd-run >/dev/null 2>&1 || return 0
+  systemctl --user is-active --quiet "$WAIT_UNIT" 2>/dev/null && return 0   # one waiter is enough
+  systemd-run --user --collect --quiet --unit="$WAIT_UNIT" \
+    --description="Barbarian installs itself when the screen unlocks" \
+    "$HERE/install.sh" --when-unlocked >/dev/null 2>&1
+}
+
+# Nothing running is nothing to restart: the next shell to start reads the new files anyway.
+SHELL_NOTE=""
+restart_shell() {
+  if ! pgrep -u "$(id -u)" -x quickshell >/dev/null 2>&1; then
+    SHELL_NOTE="and no shell was running, so the next one to start shows the panel"
+    return 0
+  fi
+  omarchy-restart-shell >/dev/null 2>&1 || return 1   # it refuses on its own while locked
+  SHELL_NOTE="and the shell restarted for the panel"
+  return 0
+}
+
+# The wallpaper engine is a long-running watcher (Restart=always), so a new copy on disk changes
+# nothing until its unit restarts. The unit is the machine's, not this repo's, and it writes the
+# path with systemd's %h, so it is found by the script's name.
+restart_engine() {
+  local unit
+  for unit in "$HOME"/.config/systemd/user/*.service; do
+    [ -f "$unit" ] || continue
+    grep -q 'per-workspace-wallpaper\.sh' "$unit" || continue
+    systemctl --user try-restart "$(basename "$unit")" 2>/dev/null || true
+  done
+}
+
 DEFERRED=0
+PLUGIN_CHANGED=0
+ENGINE_CHANGED=0
 install_plugin_file() { # <mode> <repo file> <live file>
   local mode="$1" src="$2" dest="$3"
   cmp -s "$src" "$dest" && return 0        # identical — no write, no reload
-  if session_locked; then
+  if busy; then
     DEFERRED=$((DEFERRED + 1))
     return 0
   fi
   install -D"$mode" "$src" "$dest"
+  case "$dest" in
+    "$PLUGIN_DIR"/*) PLUGIN_CHANGED=1 ;;
+    "$ENGINE_DST")   ENGINE_CHANGED=1 ;;
+  esac
 }
 
 install_plugin_file m644 "$HERE/plugin/manifest.json"         "$PLUGIN_DIR/manifest.json"
@@ -78,16 +162,35 @@ install_plugin_file m755 "$HERE/engine/per-workspace-wallpaper.sh" "$ENGINE_DST"
 
 # The engine is normally started by a user service or a theme-set hook on the host
 # machine; it is safe to install everywhere and started where the wiring exists.
+[ "$ENGINE_CHANGED" = 1 ] && restart_engine
+
+# A restart is owed when this run wrote a plugin file, or when an earlier one did and the screen
+# went up before it could be compiled.
+RESTART_OWED=0
+[ -f "$RESTART_STAMP" ] && RESTART_OWED=1
+[ "$PLUGIN_CHANGED" = 1 ] && RESTART_OWED=1
+
 if [ "$DEFERRED" -gt 0 ]; then
-  echo "barbarian: $DEFERRED file(s) deferred — the screen is locked (or the lock cannot be read); re-run unlocked"
+  arm_waiter
+  echo "barbarian: $DEFERRED file(s) held back — the screen is locked or the panel is open; they go in the moment it clears"
+elif [ "$RESTART_OWED" = 1 ]; then
+  if ! busy && restart_shell; then
+    rm -f "$RESTART_STAMP"
+    echo "barbarian: installed to $PLUGIN_DIR and $ENGINE_DST, $SHELL_NOTE"
+  else
+    # The screen went up between the write and the restart; the waiter finishes the job.
+    mkdir -p "$(dirname "$RESTART_STAMP")"
+    : > "$RESTART_STAMP"
+    arm_waiter
+    echo "barbarian: installed to $PLUGIN_DIR and $ENGINE_DST; the shell restarts when the screen is free"
+  fi
 else
   echo "barbarian: installed to $PLUGIN_DIR and $ENGINE_DST"
-  echo "barbarian: restart the shell while unlocked to load code changes: omarchy restart shell"
 fi
 
-# post-commit hook (not tracked by git): on the machine that owns the mirror ships,
-# a commit touching plugin/ or engine/ triggers the ship sync, same as the machine
-# repo's own hook. Everywhere else this installs a no-op.
+# post-commit hook (not tracked by git): a commit touching the plugin, an engine, a hook or this
+# file installs itself, and on the machine that owns the mirror ships it also triggers the ship
+# sync, same as the machine repo's own hook.
 if [ -d "$HERE/.git" ]; then
   install -Dm755 "$HERE/hooks/post-commit" "$HERE/.git/hooks/post-commit"
 fi
