@@ -52,6 +52,13 @@ import "." as Reordering
 // what moves with it. Ctrl+Z / Ctrl+Shift+Z undo and redo everything done while the panel is
 // open; the history ends when it closes.
 //
+// THEMES since 2026-09-25 (Dave: "fold this feature into Barbarian"): the palette button beside
+// the view toggle, or `t`, closes the panel and opens the full-screen theme grid — ThemeRemover.qml,
+// this plugin's overlay entry point. ⚠️ ONLY WITH NOTHING STAGED. Applying writes shell.json, and
+// every shell.json write makes the shell rebuild all of its overlays, which would shut the grid
+// the moment it opened; so while changes are pending the button is dimmed and says to apply or
+// cancel them first.
+//
 // The widget itself draws NOTHING on the bar (zero width) — it exists so the shell loads
 // this panel and gives it an IPC target. HYPER+B toggles it (bindings.lua).
 Panel {
@@ -102,6 +109,7 @@ Panel {
   // The view toggle's glyph (Material Design's view-grid, the block the bar's own
   // icons come from) — the button stays lit while icon-only mode is on.
   readonly property string iconGrid: "󰕰"
+  readonly property string iconPalette: "󰏘"
 
   // Icon-only mode (see the header). Restored from the state file on load, written
   // there by setIconsOnly — never staged, never part of apply.
@@ -1108,6 +1116,15 @@ Panel {
   function acceptAndClose() { close() }
   function cancelAndClose() { cancelled = true; close() }
 
+  // The grid is summoned through the shell, which routes this plugin's id to its overlay.
+  function openThemes() {
+    if (dirty) return
+    close()
+    var shell = root.bar ? root.bar.shell : null
+    if (shell && typeof shell.summon === "function") shell.summon("tinkerbell.arrange", "{}")
+    else Quickshell.execDetached(["omarchy-shell", "shell", "summon", "tinkerbell.arrange", "{}"])
+  }
+
   onOpenedChanged: {
     iconDrag.reset()
     deskDrag.reset()
@@ -2083,6 +2100,7 @@ Panel {
       onTextKey: function(t) {
         if (root.confirmOpen || iconDrag.busy || deskDrag.busy) return
         if (root.bgPicking >= 0 || root.tileMenuOpen) return
+        if (t === "t") { root.openThemes(); return }
         if (root.iconsOnly) {
           if (t === "L") root.moveItem(root.curLane, root.cursor, root.cursor + 1)
           else if (t === "H") root.moveItem(root.curLane, root.cursor, root.cursor - 1)
@@ -2242,6 +2260,17 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
+
+            PanelActionButton {
+              iconText: root.iconPalette
+              tooltipText: root.dirty ? "Themes — apply or cancel your changes first" : "Themes (t)"
+              opacity: root.dirty ? 0.4 : 1
+              foreground: root.foreground
+              hoverColor: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.iconSmall
+              onClicked: root.openThemes()
+            }
 
             // The view toggle: lit (hover fill, accent glyph) while icon-only mode is on.
             PanelActionButton {

@@ -2,7 +2,8 @@
 # Barbarian — installer for the Omarchy Quickshell shell.
 #
 # Installs, user-space (no sudo), into ~/.config/omarchy:
-#   plugin/ → ~/.config/omarchy/plugins/tinkerbell.arrange/   (the HYPER+B bar-arrange panel)
+#   plugin/ → ~/.config/omarchy/plugins/tinkerbell.arrange/   (the HYPER+B bar-arrange panel and
+#                                                              its full-screen theme grid)
 #   engine/per-workspace-wallpaper.sh
 #           → ~/.config/omarchy/workspace-backgrounds/        (the per-desk wallpaper watcher
 #                                                              the panel's bin/ scripts drive)
@@ -147,7 +148,6 @@ install_plugin_file() { # <mode> <repo file> <live file>
   esac
 }
 
-install_plugin_file m644 "$HERE/plugin/manifest.json"         "$PLUGIN_DIR/manifest.json"
 install_plugin_file m644 "$HERE/plugin/ReorderController.qml" "$PLUGIN_DIR/ReorderController.qml"
 install_plugin_file m644 "$HERE/plugin/ReorderRow.qml"        "$PLUGIN_DIR/ReorderRow.qml"
 install_plugin_file m644 "$HERE/plugin/Panel.qml"             "$PLUGIN_DIR/Panel.qml"
@@ -158,6 +158,15 @@ install_plugin_file m755 "$HERE/plugin/bin/ws-bg-remove"      "$PLUGIN_DIR/bin/w
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-restore"     "$PLUGIN_DIR/bin/ws-bg-restore"
 install_plugin_file m755 "$HERE/plugin/bin/ws-renumber"       "$PLUGIN_DIR/bin/ws-renumber"
 install_plugin_file m755 "$HERE/plugin/bin/barbarian-stash"   "$PLUGIN_DIR/bin/barbarian-stash"
+install_plugin_file m644 "$HERE/plugin/ThemeCard.qml"         "$PLUGIN_DIR/ThemeCard.qml"
+install_plugin_file m644 "$HERE/plugin/ThemeGrid.qml"         "$PLUGIN_DIR/ThemeGrid.qml"
+install_plugin_file m644 "$HERE/plugin/ThemeStore.qml"        "$PLUGIN_DIR/ThemeStore.qml"
+install_plugin_file m644 "$HERE/plugin/ThemeRemover.qml"      "$PLUGIN_DIR/ThemeRemover.qml"
+install_plugin_file m755 "$HERE/plugin/bin/theme-remover"     "$PLUGIN_DIR/bin/theme-remover"
+# The manifest goes in LAST: it names ThemeRemover.qml as the overlay, and a manifest that arrives
+# before the file it names leaves the shell with an overlay that fails to load. A run stopped part
+# way by the screen locking keeps the old manifest until the rest is in.
+install_plugin_file m644 "$HERE/plugin/manifest.json"         "$PLUGIN_DIR/manifest.json"
 install_plugin_file m755 "$HERE/engine/per-workspace-wallpaper.sh" "$ENGINE_DST"
 
 # The engine is normally started by a user service or a theme-set hook on the host

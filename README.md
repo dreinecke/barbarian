@@ -56,9 +56,40 @@ disable these animations. Qt does not currently expose an OS reduced-motion pref
 It was built by a Claude Code agent on the author's machine, extracted from the
 machine-configuration repo it grew up in (51 commits of history carried over).
 
+## Themes
+
+The palette button beside the view toggle, or `t`, closes the panel and opens a full-screen grid
+of every theme Omarchy can see, in the look of
+[omarchy-theme-manager's grid](https://github.com/mtolhuys/omarchy-theme-manager): Installed,
+Omarchy defaults, Hidden and Broken links, each a row of previews. It is also reachable without
+the panel: `omarchy-shell shell toggle tinkerbell.arrange '{}'` (bind it to a key). The button is
+dimmed while the panel has changes waiting; apply or cancel them first, because applying rewrites
+`shell.json` and the shell rebuilds its overlays when that file changes.
+
+Arrow keys move, typing filters, and Delete or Enter acts on the selected theme. A remove or a hide
+always asks first, and Cancel is the default for a remove.
+
+- **Your own themes** (folders in `~/.config/omarchy/themes`) go to the trash, so they can come
+  back. A link is unlinked and whatever it points to is left alone. Your copy of one of Omarchy's
+  themes can be removed too; Omarchy's original stays.
+- **Omarchy's own themes** can only be hidden. The `omarchy` package owns them, so deleting one
+  needs root and the next update would put it back. Hiding takes the theme out of Omarchy's own
+  theme picker as well as this grid; Restore puts it back. The list lives in
+  `~/.local/state/omarchy/barbarian-hidden-themes`.
+- **Broken links** — links whose target is gone — can be removed one at a time, or all at once
+  with Shift+Delete.
+- **The theme in use** cannot be removed or hidden.
+
+Omarchy rebuilds its picker's cache whenever a theme folder changes, which brings hidden themes
+back; the grid puts them away again within about 15 seconds. The first picker open after installing
+a theme some other way, or after an Omarchy update, can still show a hidden theme once.
+`plugin/bin/theme-remover` does every change on disk, and its header explains the two caches it
+keeps in line.
+
 ## What's inside
 
-- **`plugin/`** — the Quickshell bar widget (`tinkerbell.arrange`). It draws nothing
+- **`plugin/`** — the Quickshell bar widget (`tinkerbell.arrange`) and, as the same plugin's
+  overlay entry point, the theme grid (`ThemeRemover.qml` and the `Theme*.qml` beside it). It draws nothing
   on the bar (zero width); it exists to host the panel and its IPC target, toggled
   with `qs -p /usr/share/omarchy/shell ipc call tinkerbell.arrange toggle`.
   On close it writes the new order straight into Omarchy's `shell.json` (whole
@@ -76,6 +107,8 @@ machine-configuration repo it grew up in (51 commits of history carried over).
 - Omarchy (built against its Quattro-era shell: the QML imports `qs.Commons` and
   `qs.Ui`, which only exist inside the Omarchy shell)
 - ImageMagick (`magick`) for solid-colour wallpapers
+- `jq` and `gio` (both in a standard Omarchy install) for the theme grid — `gio trash` is what
+  makes a removed theme recoverable
 - The plugin must be **listed in `shell.json`'s right section** to load at all —
   Omarchy keeps that file machine-local, so add the id by hand after installing.
 

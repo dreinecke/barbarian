@@ -1,0 +1,275 @@
+#!/bin/bash
+# Barbarian's theme helper (2026-09-25, Dave: "a little plugin … that allows you to remove any
+# theme from your themes"). Every change the theme grid makes on disk goes through here; the QML
+# only draws.
+#
+#   theme-remover list             JSON array of every theme Omarchy can see
+#   theme-remover remove <slug>    a theme of yours: a folder goes to the trash, a link is unlinked
+#   theme-remover remove-broken    unlink every link in the themes folder whose target is gone
+#   theme-remover hide <slug>      a theme that ships with Omarchy: take it out of Omarchy's picker
+#   theme-remover restore <slug>   put a hidden theme back
+#   theme-remover prune            bring Omarchy's picker cache back in line with the hidden list
+#
+# WHY OMARCHY'S OWN THEMES ARE HIDDEN, NOT DELETED. They live in $OMARCHY_PATH/themes, which the
+# omarchy package owns: deleting one needs root, and the next `omarchy update` puts it back.
+# Omarchy's theme picker shows whatever has an entry in its preview cache
+# (~/.cache/omarchy/theme-selector/previews), so hiding a theme deletes that entry. The hidden list
+# in ~/.local/state is the truth; the cache is only ever brought in line with it.
+#
+# ⚠️ OMARCHY REBUILDS THAT CACHE whenever a theme folder changes — an install, a removal, an
+# `omarchy update` — and the rebuild puts every hidden entry back. Removals made here rebuild and
+# prune straight away. For the rest, the plugin reads the cache's fast-signature file every 15
+# seconds and prunes when it changes, but the rebuild happens as the picker opens, so the FIRST
+# picker open after an outside change can still show a hidden theme once.
+#
+# ⚠️ AND THE PICKER HAS A SECOND CACHE: the rows it builds from that folder
+# (~/.cache/omarchy/image-selector/<key>.rows), trusted for as long as the folder's mtime matches
+# in WHOLE SECONDS. A change here in the same second as a rebuild leaves that mtime unchanged, so
+# Omarchy's picker went on listing every hidden theme while this grid showed them hidden (Dave,
+# 2026-09-25: "some of them definitely still appear"). Every change made here now drops those
+# rows, and the plugin's prune drops them whenever they still name a hidden theme — waiting a few
+# seconds first, so it lands after the picker has written them.
+#
+# ⚠️ NOTHING HERE WRITES UNDER ~/.config/omarchy/plugins. Any write there reloads the whole shell,
+# lock screen included — see install_plugin_file in this repo's install.sh.
+
+set -uo pipefail
+
+export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+export PATH="$OMARCHY_PATH/bin:$PATH"
+
+USER_THEMES="$HOME/.config/omarchy/themes"
+STOCK_THEMES="$OMARCHY_PATH/themes"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+HIDDEN_FILE="$STATE_DIR/barbarian-hidden-themes"
+LOCK_FILE="$STATE_DIR/barbarian-themes.lock"
+PICKER_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/theme-selector"
+ROWS_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/image-selector"
+ACTIVE_FILE="$HOME/.local/state/omarchy/current/theme.name"
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+label_for() {
+  printf '%s\n' "$1" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
+}
+
+active_theme() {
+  cat "$ACTIVE_FILE" 2>/dev/null
+}
+
+require_slug() {
+  [[ -n ${1:-} && $1 != */* && $1 != . && $1 != .. ]] || die "No theme was named."
+}
+
+has_user_copy() {
+  [[ -e $USER_THEMES/$1 || -L $USER_THEMES/$1 ]]
+}
+
+is_hidden() {
+  grep -qxF -- "$1" "$HIDDEN_FILE" 2>/dev/null
+}
+
+# The same search omarchy-theme-switcher uses, so a card shows what Omarchy's picker shows.
+find_preview() {
+  local theme_path="$1" preview name
+
+  for name in preview.png preview.jpg preview.jpeg preview.webp preview.gif preview.bmp; do
+    preview=$(find -L "$theme_path" -maxdepth 1 -type f -iname "$name" -print -quit 2>/dev/null)
+    if [[ -n $preview ]]; then
+      printf '%s\n' "$preview"
+      return
+    fi
+  done
+
+  if [[ -d $theme_path/backgrounds ]]; then
+    find -L "$theme_path/backgrounds" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.webp' \) -print 2>/dev/null | sort | head -n 1
+  fi
+}
+
+# One tab-separated row per theme: slug, label, kind, preview, active, hidden.
+#   user     a folder of yours                       → trash
+#   link     a link of yours that still resolves     → unlink
+#   broken   a link of yours whose target is gone    → unlink
+#   overlay  your copy of one of Omarchy's themes    → trash or unlink yours; Omarchy's stays
+#   stock    ships with Omarchy                      → hide
+theme_rows() {
+  local active path slug kind preview
+  active=$(active_theme)
+
+  for path in "$USER_THEMES"/*; do
+    [[ -e $path || -L $path ]] || continue
+    slug=${path##*/}
+    if [[ -L $path && ! -e $path ]]; then
+      kind=broken
+    elif [[ -d $STOCK_THEMES/$slug ]]; then
+      kind=overlay
+    elif [[ -L $path ]]; then
+      kind=link
+    elif [[ -d $path ]]; then
+      kind=user
+    else
+      continue
+    fi
+
+    preview=""
+    if [[ $kind != broken ]]; then
+      preview=$(find_preview "$path")
+      [[ -z $preview && $kind == overlay ]] && preview=$(find_preview "$STOCK_THEMES/$slug")
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$(label_for "$slug")" "$kind" "$preview" \
+      "$([[ $slug == "$active" ]] && echo 1 || echo 0)" 0
+  done
+
+  for path in "$STOCK_THEMES"/*/; do
+    path=${path%/}
+    slug=${path##*/}
+    has_user_copy "$slug" && continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$(label_for "$slug")" stock "$(find_preview "$path")" \
+      "$([[ $slug == "$active" ]] && echo 1 || echo 0)" "$(is_hidden "$slug" && echo 1 || echo 0)"
+  done
+}
+
+list() {
+  theme_rows | jq -Rsc '
+    split("\n") | map(select(length > 0) | split("\t") | {
+      slug: .[0], label: .[1], kind: .[2], preview: .[3],
+      active: (.[4] == "1"), hidden: (.[5] == "1")
+    })'
+}
+
+lock_state() {
+  mkdir -p "$STATE_DIR"
+  exec 9>"$LOCK_FILE"
+  flock -w 30 9 || die "Another theme change is still running."
+}
+
+# Echoes how many previews it took out, so the plugin's prune knows whether the rows are stale.
+prune() {
+  local slug removed=0 file
+  [[ -s $HIDDEN_FILE ]] || { echo 0; return 0; }
+  while IFS= read -r slug; do
+    [[ -n $slug && $slug != */* ]] || continue
+    has_user_copy "$slug" && continue
+    for file in "$PICKER_CACHE/previews/$slug".*; do
+      [[ -e $file || -L $file ]] && rm -f -- "$file" && removed=$((removed + 1))
+    done
+  done <"$HIDDEN_FILE"
+  echo "$removed"
+}
+
+# The rows cache is found by the folder path recorded in its signature, not by recomputing
+# Omarchy's key, so a change in how Omarchy names it can make this miss but never delete the wrong
+# file. The next picker open rebuilds the rows from the folder as it is.
+forget_rows() {
+  local sig
+  for sig in "$ROWS_CACHE"/*.fast-signature; do
+    [[ -f $sig ]] && grep -qF -- "$PICKER_CACHE/previews:" "$sig" || continue
+    rm -f -- "$sig" "${sig%.fast-signature}.rows"
+  done
+}
+
+rows_name_a_hidden_theme() {
+  local sig slug
+  [[ -s $HIDDEN_FILE ]] || return 1
+  for sig in "$ROWS_CACHE"/*.fast-signature; do
+    [[ -f $sig ]] && grep -qF -- "$PICKER_CACHE/previews:" "$sig" || continue
+    while IFS= read -r slug; do
+      [[ -n $slug ]] && grep -qF -- "$PICKER_CACHE/previews/$slug." "${sig%.fast-signature}.rows" 2>/dev/null && return 0
+    done <"$HIDDEN_FILE"
+  done
+  return 1
+}
+
+prune_picker() {
+  local removed
+  removed=$(prune)
+  if (( removed > 0 )) || rows_name_a_hidden_theme; then forget_rows; fi
+}
+
+# Rebuild Omarchy's picker cache now, while we know a theme folder changed, then re-apply the
+# hidden list — otherwise the rebuild would wait for the next picker open and bring them back.
+refresh_picker() {
+  timeout 30 omarchy-theme-switcher --preload >/dev/null 2>&1
+  prune >/dev/null
+  forget_rows
+}
+
+refuse_active() {
+  [[ $1 != "$(active_theme)" ]] || die "$(label_for "$1") is the theme in use. Switch to another theme first."
+}
+
+remove() {
+  local slug="${1:-}" path label
+  require_slug "$slug"
+  refuse_active "$slug"
+  path="$USER_THEMES/$slug"
+  label=$(label_for "$slug")
+  lock_state
+
+  if [[ -L $path ]]; then
+    rm -- "$path" || die "Could not remove the link $path."
+    refresh_picker
+    printf 'Removed %s\n' "$label"
+  elif [[ -d $path ]]; then
+    gio trash -- "$path" 2>/dev/null || die "Could not move $label to the trash."
+    refresh_picker
+    omarchy-notification-send "Theme removed" "$label is in the trash, if you want it back." >/dev/null 2>&1 || true
+    printf 'Moved %s to the trash\n' "$label"
+  else
+    die "$label is not one of your themes."
+  fi
+}
+
+remove_broken() {
+  local path count=0
+  lock_state
+  for path in "$USER_THEMES"/*; do
+    [[ -L $path && ! -e $path ]] || continue
+    rm -- "$path" && count=$((count + 1))
+  done
+  (( count > 0 )) && refresh_picker
+  printf 'Removed %d broken link%s\n' "$count" "$([[ $count == 1 ]] || echo s)"
+}
+
+hide() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  [[ -d $STOCK_THEMES/$slug ]] || die "$(label_for "$slug") does not ship with Omarchy."
+  has_user_copy "$slug" && die "$(label_for "$slug") has a copy of yours on top. Remove that first."
+  refuse_active "$slug"
+  lock_state
+  is_hidden "$slug" || printf '%s\n' "$slug" >>"$HIDDEN_FILE"
+  prune >/dev/null
+  forget_rows
+  printf 'Hid %s\n' "$(label_for "$slug")"
+}
+
+restore() {
+  local slug="${1:-}" kept
+  require_slug "$slug"
+  lock_state
+  if [[ -f $HIDDEN_FILE ]]; then
+    kept=$(grep -vxF -- "$slug" "$HIDDEN_FILE")
+    if [[ -n $kept ]]; then printf '%s\n' "$kept" >"$HIDDEN_FILE"; else rm -f "$HIDDEN_FILE"; fi
+  fi
+  # Omarchy only rebuilds its preview links when its signature changes; dropping the signature
+  # makes it relink every theme, and prune then takes out whatever is still hidden.
+  rm -f "$PICKER_CACHE/fast-signature"
+  refresh_picker
+  printf 'Restored %s\n' "$(label_for "$slug")"
+}
+
+case "${1:-}" in
+  list) list ;;
+  remove) remove "${2:-}" ;;
+  remove-broken) remove_broken ;;
+  hide) hide "${2:-}" ;;
+  restore) restore "${2:-}" ;;
+  # The plugin calls this when Omarchy's picker has just rebuilt its folder. The wait lets the picker
+  # finish writing its rows first, so prune sees them and they are not written again stale after.
+  prune) sleep "${THEME_REMOVER_SETTLE:-3}"; lock_state; prune_picker ;;
+  *) die "Usage: theme-remover list | remove <slug> | remove-broken | hide <slug> | restore <slug> | prune" ;;
+esac

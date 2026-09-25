@@ -5,12 +5,14 @@
   "version": "1.0.0",
   "author": "dreinecke",
   "license": "MIT",
-  "description": "Barbarian \u2014 the bar arranger: two columns (far-left and right lanes) or icon-only rows, drag to reorder or re-lane, eye/x or right-click menu to hide; written to shell.json + bar-hidden.json when the panel closes.",
+  "description": "Barbarian \u2014 the bar arranger: two columns (far-left and right lanes) or icon-only rows, drag to reorder or re-lane, eye/x or right-click menu to hide; written to shell.json + bar-hidden.json when the panel closes. Its Themes button (or HYPER+X) opens a full-screen grid of every theme, to remove your own or hide Omarchy's.",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "overlay"
   ],
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "barWidget": "Panel.qml",
+    "overlay": "ThemeRemover.qml"
   },
   "barWidget": {
     "displayName": "Barbarian",
@@ -18,5 +20,6 @@
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"
-  }
+  },
+  "keepLoaded": true
 }
