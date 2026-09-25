@@ -1,23 +1,46 @@
 #!/usr/bin/env bash
-# ws-bg-restore <image-path> [N...] — undo a ws-bg-remove: take the image back out of the trash
-# and pin it to desks N... again.
+# ws-bg-restore <image-path> [N...] — undo a ws-bg-remove: take the image back out of the trash,
+# or un-hide one of the theme's own, and pin it to desks N... again.
 #
 # Barbarian's Ctrl+Z (Dave, 2026-09-19: "ctrl-z to undo the last change you made to anything").
 # ws-bg-remove trashes the file (`gio trash`) rather than deleting it precisely so a wrong click can
 # be undone, and the panel passes the desks that were pinned to it, which ws-bg-remove unpinned.
-# The newest trashed copy from that path is the one restored.
+# The newest trashed copy from that path is the one restored. A theme's own image was never
+# moved, only named in workspace-backgrounds/<theme>/hidden-images; its line is dropped, and the
+# file with it once no line is left.
 set -euo pipefail
 
 IMG="${1:?usage: ws-bg-restore <image-path> [N...]}"
 shift
 HERE="$(dirname "$(readlink -f "$0")")"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current"
+THEME="$(cat "$STATE/theme.name" 2>/dev/null)"
+[ -n "$THEME" ] || { echo "ws-bg-restore: no current theme name" >&2; exit 1; }
+THEMEBG="$(readlink -f "$STATE/theme")/backgrounds"
+HIDDEN="$HOME/.config/omarchy/workspace-backgrounds/$THEME/hidden-images"
 
-if [ ! -e "$IMG" ]; then
-  uri="$(gio trash --list 2>/dev/null | awk -F'\t' -v want="$IMG" '$2 == want { hit = $1 } END { print hit }')"
-  [ -n "$uri" ] || { echo "ws-bg-restore: $IMG is not in the trash" >&2; exit 1; }
-  gio trash --restore "$uri"
-fi
+case "$(realpath -m -- "$IMG")" in
+  "$THEMEBG"/*)
+    if [ -f "$HIDDEN" ]; then
+      grep -vxF -- "${IMG##*/}" "$HIDDEN" > "$HIDDEN.tmp" || true
+      if [ -s "$HIDDEN.tmp" ]; then mv -f -- "$HIDDEN.tmp" "$HIDDEN"; else rm -f -- "$HIDDEN.tmp" "$HIDDEN"; fi
+    fi
+    ;;
+  *)
+    if [ ! -e "$IMG" ]; then
+      uri="$(gio trash --list 2>/dev/null | awk -F'\t' -v want="$IMG" '$2 == want { hit = $1 } END { print hit }')"
+      [ -n "$uri" ] || { echo "ws-bg-restore: $IMG is not in the trash" >&2; exit 1; }
+      gio trash --restore "$uri"
+    fi
+    ;;
+esac
 
 for n in "$@"; do
   "$HERE/ws-bg-pick" "$n" "$IMG"
 done
+
+# The desk on screen may be an Auto desk that goes back to this image.
+WATCHER="$HOME/.config/omarchy/workspace-backgrounds/per-workspace-wallpaper.sh"
+if [ -x "$WATCHER" ]; then
+  "$WATCHER" apply
+fi

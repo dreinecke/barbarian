@@ -93,9 +93,20 @@ wallpaper_for() {
   local -a list
   mapfile -t list < <(theme_backgrounds)
   [ "${#list[@]}" -gt 0 ] || return 0
-  local image
+  local image dir pick i
   image="$(auto_image "$ws")"
-  printf '%s' "${list[$(( (image - 1) % ${#list[@]} ))]}"
+  # ⚠️ A HIDDEN IMAGE HANDS ITS DESK ON TO THE NEXT ONE, AND NO OTHER DESK MOVES. Barbarian's × on
+  # one of the theme's own images (2026-09-25) names it in `<theme>/hidden-images` rather than
+  # deleting it. Taking it out of the list would renumber everything after it, so hiding image 1
+  # would change every Auto desk at once; counting against the whole list and skipping forward
+  # past hidden ones changes only the desk that was showing it.
+  dir="$(readlink -f "$STATE/theme" 2>/dev/null)/backgrounds"
+  for (( i = 0; i < ${#list[@]}; i++ )); do
+    pick="${list[$(( (image - 1 + i) % ${#list[@]} ))]}"
+    [ "${pick%/*}" = "$dir" ] && grep -qxF -- "${pick##*/}" "$HERE/$theme/hidden-images" 2>/dev/null && continue
+    printf '%s' "$pick"
+    return 0
+  done
 }
 
 # Which of the theme's images desk N shows on Auto: the Nth, unless the desk has been moved.

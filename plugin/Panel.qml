@@ -75,8 +75,8 @@ Panel {
   readonly property string stashScript:
     Qt.resolvedUrl("bin/barbarian-stash").toString().replace(/^file:\/\//, "")
   readonly property string snapDir: Quickshell.env("HOME") + "/.config/omarchy/workspace-layout/snapshots"
-  // Dave's own background images live under here (ws-bg-add copies into it); only these get
-  // the × — a theme's shipped images belong to the omarchy package.
+  // Dave's own background images live under here (ws-bg-add copies into it); the × trashes
+  // these, and only hides a theme's shipped images, which are not his to delete.
   readonly property string userBgDir: Quickshell.env("HOME") + "/.config/omarchy/backgrounds/"
   // This widget must never list (or reorder away) itself.
   readonly property string selfId: "tinkerbell.arrange"
@@ -859,15 +859,16 @@ Panel {
 
   // The × on an image tile (Dave, 2026-09-03: "Hover reveals an x in top right. And sets the
   // background to auto"): the image leaves the theme — every desk pinned to it goes back to
-  // Auto and the file goes to the trash (bin/ws-bg-remove). The strip and the rows are updated
-  // here at once, and the picker view stays open.
-  // Undo takes the file back out of the trash and pins it to the same desks again.
+  // Auto, and one of Dave's own images goes to the trash while one of the theme's own is hidden
+  // (bin/ws-bg-remove; hiding since 2026-09-25). The strip and the rows are updated here at
+  // once, and the picker view stays open.
+  // Undo takes the file back out of the trash, or un-hides it, and pins it to the same desks again.
   function bgRemove(path) {
     var desks = []
     for (var i = 0; i < lmW.count; i++)
       if (lmW.get(i).bgPin === path) desks.push(lmW.get(i).num)
     applyBgRemove(path)
-    record("Remove a background image",
+    record(String(path).indexOf(userBgDir) === 0 ? "Remove a background image" : "Hide a background image",
       function() { applyBgRestore(path, desks) },
       function() { applyBgRemove(path) })
   }
@@ -1124,7 +1125,7 @@ Panel {
         "echo ---WS---; hyprctl workspaces -j 2>/dev/null; echo ---ACTIVE---; hyprctl activeworkspace -j 2>/dev/null; " +
         "echo ---SNAPS---; ls \"$HOME/.config/omarchy/workspace-layout/snapshots\" 2>/dev/null; " +
         "echo ---CANRENAME---; command -v \"$HOME/.local/bin/workspace-edit\" 2>/dev/null || true; " +
-        "echo ---BGS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; find -L \"$HOME/.config/omarchy/backgrounds/$tn\" \"$d\" -maxdepth 1 -type f 2>/dev/null | sort; " +
+        "echo ---BGS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; h=\"$HOME/.config/omarchy/workspace-backgrounds/$tn/hidden-images\"; { find -L \"$HOME/.config/omarchy/backgrounds/$tn\" -maxdepth 1 -type f; find -L \"$d\" -maxdepth 1 -type f | awk -F/ -v h=\"$h\" 'BEGIN { while ((getline name < h) > 0) hidden[name] } !($NF in hidden)'; } 2>/dev/null | sort; " +
         "echo ---COLORS---; cat \"$HOME/.local/state/omarchy/current/theme/colors.toml\" 2>/dev/null; " +
         "echo ---PINS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; for f in \"$HOME/.config/omarchy/workspace-backgrounds/$tn\"/ws*.*; do [ -e \"$f\" ] && echo \"$f|$(readlink -f \"$f\")\"; done; " +
         "echo ---HOOK---; ls -A \"$HOME/.config/omarchy/hooks/workspaces-renumbered\" \"$HOME/.config/omarchy/hooks/workspaces-renumbered.d\" 2>/dev/null; true"]
@@ -2730,7 +2731,6 @@ Panel {
               delegate: ClippingRectangle {
                 required property var modelData
                 readonly property bool current: root.bgPickingPin === modelData
-                readonly property bool removable: String(modelData).indexOf(root.userBgDir) === 0
                 width: pickFlow.tileW
                 height: pickFlow.tileH
                 radius: Style.cornerRadius
@@ -2753,10 +2753,10 @@ Panel {
                   onClicked: root.bgPick(root.bgPicking, modelData)
                 }
 
-                // Hover reveals a × in the top-right corner of one of Dave's own images; a
-                // faint dark disc keeps it legible over a bright picture.
+                // Hover reveals a × in the top-right corner of every image; a faint dark disc
+                // keeps it legible over a bright picture.
                 Rectangle {
-                  visible: removable && (tileArea.containsMouse || xArea.containsMouse)
+                  visible: tileArea.containsMouse || xArea.containsMouse
                   anchors.top: parent.top
                   anchors.right: parent.right
                   anchors.margins: Style.space(8)

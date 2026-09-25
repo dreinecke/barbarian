@@ -65,7 +65,8 @@ machine-configuration repo it grew up in (51 commits of history carried over).
   entries move, so each widget's per-widget settings travel with it) and parks
   hidden widget ids in `~/.config/omarchy/bar-hidden.json`.
   Its `bin/` scripts drive the per-desk wallpaper picker: pin any image (or a solid
-  colour) to a desk, add images from Pictures/Downloads, remove ones you added.
+  colour) to a desk, add images from Pictures/Downloads, remove ones you added, and
+  hide the theme's own (listed per theme in `workspace-backgrounds/<theme>/hidden-images`).
 - **`engine/per-workspace-wallpaper.sh`** — the wallpaper watcher that applies those
   pins on every workspace switch and theme change. The panel's scripts call it after
   each pick; on the author's machine a user service keeps it running.
