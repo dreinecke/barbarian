@@ -298,9 +298,14 @@ Item {
       if (event.key === Qt.Key_Escape) {
         if (view.filterText) view.filterText = ""
         else view.closeRequested()
+      } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+        // Save and exit, as Enter is in the panel (Dave, 2026-09-26: "have Enter be save and exit
+        // on that screen too"). Every remove, hide and restore here is on disk the moment it is
+        // confirmed, so nothing is left to save and Enter closes the grid.
+        view.closeRequested()
       } else if (event.key === Qt.Key_Delete && shift && view.selectedTheme && view.selectedTheme.kind === "broken") {
         view.requestRemoveBroken()
-      } else if (event.key === Qt.Key_Delete || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      } else if (event.key === Qt.Key_Delete) {
         view.requestAction()
       } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Backtab) {
         view.select(view.selectedIndex - 1)
@@ -515,7 +520,7 @@ Item {
           : "←↑↓→ move  ·  type to filter"
             + (view.selectedAction && view.selectedAction.button ? "  ·  Delete " + view.selectedAction.button.toLowerCase() : "")
             + (view.selectedTheme && view.selectedTheme.kind === "broken" && view.brokenCount > 1 ? "  ·  Shift+Delete all broken links" : "")
-            + "  ·  Esc close")
+            + "  ·  Enter or Esc close")
       }
     }
   }
