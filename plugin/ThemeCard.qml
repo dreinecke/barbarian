@@ -1,8 +1,9 @@
 import QtQuick
 import qs.Commons
+import qs.Ui
 
-// One theme: its preview, its name underneath, and a badge when it is in use, your copy of an
-// Omarchy theme, a link, or a broken link.
+// One theme: its preview, its name underneath, a badge when it is in use, your copy of an
+// Omarchy theme, a link, or a broken link, and on hover a × that removes or hides it.
 Item {
   id: card
 
@@ -11,12 +12,15 @@ Item {
   property bool selected: false
   property int imageHeight: 169
   property int labelHeight: 30
+  // What the × does — "Remove" or "Hide" — or "" for no ×. The grid decides.
+  property string removeLabel: ""
 
   signal picked()
   signal activated()
+  signal removeRequested()
 
   readonly property bool hidden: theme.hidden === true
-  readonly property bool hovered: mouse.containsMouse
+  readonly property bool hovered: mouse.containsMouse || removeArea.containsMouse
   readonly property string badge: theme.active ? "CURRENT"
     : theme.kind === "overlay" ? "YOUR COPY"
     : theme.kind === "link" ? "LINK"
@@ -70,6 +74,8 @@ Item {
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.margins: Style.space(8)
+        // Steps left of the × while it shows, rather than sitting under it.
+        anchors.rightMargin: removeMark.visible ? Style.space(14) + removeMark.width : Style.space(8)
         width: badgeText.implicitWidth + Style.space(12)
         height: badgeText.implicitHeight + Style.space(6)
         color: card.theme.active ? Color.accent
@@ -120,5 +126,42 @@ Item {
     cursorShape: Qt.PointingHandCursor
     onClicked: card.picked()
     onDoubleClicked: card.activated()
+  }
+
+  // Hover reveals a × in the top-right corner (Dave, 2026-09-26: "a small x in the top right of
+  // every swatch to remove that theme"), the same dark disc and red ✕ as on the panel's background
+  // tiles. It asks first, as Delete does.
+  Rectangle {
+    id: removeMark
+    visible: card.removeLabel !== "" && card.hovered
+    anchors.top: parent.top
+    anchors.right: parent.right
+    anchors.margins: frame.border.width + Style.space(8)
+    width: Style.space(26)
+    height: width
+    radius: width / 2
+    color: Qt.rgba(0, 0, 0, removeArea.containsMouse ? 0.55 : 0.35)
+
+    Text {
+      anchors.centerIn: parent
+      text: "\u2715"
+      font.family: Style.font.family
+      font.pixelSize: Style.font.title
+      font.bold: true
+      color: removeArea.containsMouse ? "#ff6b81" : "#ff3d5a"
+    }
+
+    MouseArea {
+      id: removeArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: card.removeRequested()
+    }
+
+    PanelToolTip {
+      visible: removeArea.containsMouse
+      text: card.removeLabel
+    }
   }
 }

@@ -111,6 +111,25 @@ Item {
 
   onSectionOffsetsChanged: reselect()
 
+  // ⚠️ AFTER A REBUILD THE CARDS' ×s WAIT FOR THE POINTER TO MOVE. Every reload makes new cards, and
+  // one the pointer crossed while they were being laid out can be left believing it is hovered: in
+  // tests/nested on 2026-09-26 a card kept its × after a removal while the pointer stood still over
+  // another, until the pointer moved. Only a move to a new spot counts, not a hover repeated there.
+  property bool pointerMoved: false
+  property point pointerAtRebuild: Qt.point(-1, -1)
+  onSectionsChanged: {
+    pointerMoved = false
+    pointerAtRebuild = pointerWatch.point.position
+  }
+
+  HoverHandler {
+    id: pointerWatch
+    onPointChanged: {
+      var p = point.position
+      if (p.x !== view.pointerAtRebuild.x || p.y !== view.pointerAtRebuild.y) view.pointerMoved = true
+    }
+  }
+
   function moveVertical(direction) {
     var at = locate(selectedIndex)
     if (!at) return
@@ -198,6 +217,14 @@ Item {
   }
 
   readonly property var selectedAction: actionFor(selectedTheme)
+
+  // The word on a card's ×: a remove or a hide, never a restore, and none for the theme in use or
+  // while a change is running.
+  function removeLabelFor(theme) {
+    var action = actionFor(theme)
+    if (!action || (store && store.busy)) return ""
+    return action.verb === "remove" || action.verb === "hide" ? action.button : ""
+  }
 
   function requestAction() {
     var theme = selectedTheme
@@ -417,8 +444,10 @@ Item {
                   selected: flatIndex === view.selectedIndex
                   onSelectedChanged: if (selected) view.selectedCard = card
                   Component.onCompleted: if (selected) view.selectedCard = card
+                  removeLabel: view.pointerMoved ? view.removeLabelFor(modelData) : ""
                   onPicked: { view.select(flatIndex); view.focusKeys() }
                   onActivated: { view.select(flatIndex); view.requestAction() }
+                  onRemoveRequested: { view.select(flatIndex); view.focusKeys(); view.requestAction() }
                 }
               }
             }
@@ -523,21 +552,6 @@ Item {
             + "  ·  Enter or Esc close")
       }
     }
-  }
-
-  // A × over the grid's top-right corner, where a close is looked for (Dave, 2026-09-26: "Please
-  // add little x icon in the top right of barbarian's theme manager"): the panel's own × glyph and
-  // hover. Close in the footer, Esc and a click on the backdrop still close the grid as well.
-  PanelActionButton {
-    anchors.right: content.right
-    anchors.bottom: content.top
-    anchors.bottomMargin: Style.space(8)
-    iconText: ""
-    tooltipText: "Close (Esc)"
-    foreground: Color.foreground
-    hoverColor: Color.accent
-    fontFamily: Style.font.family
-    onClicked: view.closeRequested()
   }
 
   ConfirmDialog {

@@ -66,9 +66,10 @@ the panel: `omarchy-shell shell toggle tinkerbell.arrange '{}'` (bind it to a ke
 dimmed while the panel has changes waiting; apply or cancel them first, because applying rewrites
 `shell.json` and the shell rebuilds its overlays when that file changes.
 
-Arrow keys move, typing filters, and Delete acts on the selected theme. A remove or a hide always
-asks first, and Cancel is the default for a remove. Every change is made on the spot, so Enter,
-which applies and closes the panel, closes the grid; so do Esc and the × in its top-right corner.
+Arrow keys move, typing filters, and Delete acts on the selected theme; so does the × that hovering
+a theme shows in its top-right corner. A remove or a hide always asks first, and Cancel is the
+default for a remove. Every change is made on the spot, so Enter, which applies and closes the
+panel, closes the grid, and so does Esc.
 
 - **Your own themes** (folders in `~/.config/omarchy/themes`) go to the trash, so they can come
   back. A link is unlinked and whatever it points to is left alone. Your copy of one of Omarchy's
