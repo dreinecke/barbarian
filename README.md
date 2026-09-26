@@ -2,7 +2,7 @@
 
 Barbarian is a panel for the [Omarchy](https://omarchy.org) Quickshell bar: open it
 with a keybind and reorder, re-lane or hide every widget on the bar's right side by
-dragging (or with `j`/`k` + `J`/`K`), reorder and delete workspaces (desks), and give
+dragging (or with `j`/`k` + `J`/`K`), add, reorder and delete workspaces (desks), and give
 each desk its own wallpaper. `Ctrl+Z` undoes any change made while the panel is open,
 and `Ctrl+Shift+Z` (or `Ctrl+Y`) redoes it.
 
@@ -22,12 +22,21 @@ follow the layout — `h`/`l` walk a row, `j`/`k` hop rows (the desks' row inclu
 carry, `J`/`K` throw, `x` hides a widget or deletes a desk. The choice is remembered in
 `~/.local/state/omarchy/barbarian.json`.
 
-## Reordering and deleting desks
+## Adding, reordering and deleting desks
+
+**+ Add workspace** sits at the far end of the desks' row in icon view (the right end, or the left
+when the workspaces sit on the right of the bar) and at the foot of the desks column in the list.
+It puts a new desk at the end and opens its name for typing; Enter takes the name and, as with
+any rename, applies the panel's changes and closes it, while Escape leaves it called "New
+workspace" (made with no name, it shows its bare number). Until then the new desk can be renamed,
+moved and removed (without the "are you sure", since nothing is on it), but has no background,
+recording or desk to go to. New desks take numbers no other workspace has, up to 10, and the
+button dims when there is none left.
 
 Drag a desk (either view), carry it with the keys, or use its menu; delete one from its menu
 (icon view) or its bin button (list view). Deleting asks first, and says where the desk's
-windows go: the desk before it, or the one after it when it is the first. Both are staged with
-the rest of the panel's changes, so Escape still throws them away.
+windows go: the desk before it, or the one after it when it is the first (never a new desk).
+All three are staged with the rest of the panel's changes, so Escape still throws them away.
 
 Applying renumbers the desks so the Nth desk on the bar is desk N again, and `SUPER+N` still
 reaches it. `plugin/bin/ws-renumber` does it in one pass after the panel closes:
@@ -38,14 +47,19 @@ reaches it. `plugin/bin/ws-renumber` does it in one pass after the panel closes:
   Omarchy's per-desk tiling layout (`SUPER+L`) moves with it too;
 - every executable in `~/.config/omarchy/hooks/workspaces-renumbered.d/` runs first, with one
   `move:OLD:NEW` or `delete:OLD:NEW` argument per changed desk (for a deleted desk, `NEW` is the
-  desk its windows went to). That is where a machine's own config — window rules that name a desk
-  by number, scripts that open things on a desk — follows along. A hook that exits non-zero
-  stops the whole pass with nothing changed.
+  desk its windows went to) and one `add:NEW:NAME` per new desk (`add:NEW` when it has no name).
+  That is where a machine's own config — the desk table, window rules that name a desk by
+  number, scripts that open things on a desk — follows along. A hook that exits non-zero stops
+  the whole pass with nothing changed;
+- a new desk is made last, once the others have their numbers: by the config reload, where a
+  hook wrote it into the config, or otherwise as a persistent workspace that lasts until
+  Hyprland next reloads its config (with nowhere to write it down, an empty desk cannot outlive
+  that).
 
 Which workspaces are desks: the persistent ones when the Hyprland config declares any, otherwise
 every workspace from 1 to 10 that exists. A config that declares persistent desks would put them
-back at the next login, so on such a machine Barbarian offers reordering and deleting only once a
-`workspaces-renumbered` hook is installed. A failure is reported as a notification, and the last
+back at the next login, so on such a machine Barbarian offers adding, reordering and deleting only
+once a `workspaces-renumbered` hook is installed. A failure is reported as a notification, and the last
 passes are logged in `~/.local/state/omarchy/barbarian-renumber.log`.
 
 The drag preview is independent of the lane layout: pointer movement never reorders the

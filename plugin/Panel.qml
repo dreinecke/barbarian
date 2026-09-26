@@ -52,6 +52,13 @@ import "." as Reordering
 // what moves with it. Ctrl+Z / Ctrl+Shift+Z undo and redo everything done while the panel is
 // open; the history ends when it closes.
 //
+// ADDING A DESK since 2026-09-26 (Dave: "Barbarian should have a [+ Add workspace] button"): the
+// button at the strip row's far end, or at the foot of the desks column, stages a new desk at the
+// end of the order. It is staged like a delete — Escape forgets it, Enter makes it, through the same
+// bin/ws-renumber pass — and until then it is a FRESH row: it can be named, moved and removed, but
+// not gone to, given a background or recorded, because it has no number of its own yet. Its `num`
+// is a spare number standing in for it (see syncDeskSlots).
+//
 // THEMES since 2026-09-25 (Dave: "fold this feature into Barbarian"): the palette button beside
 // the view toggle, or `t`, closes the panel and opens the full-screen theme grid — ThemeRemover.qml,
 // this plugin's overlay entry point. ⚠️ ONLY WITH NOTHING STAGED. Applying writes shell.json, and
@@ -170,6 +177,16 @@ Panel {
   property var deskSlots: []
   property var deskMerges: ({})
   property bool canEditDesks: false
+  // Adding desks: the desks' numbers when the panel opened (deskSlots adds the new desks' numbers
+  // to these), every workspace number in use then (a new desk never takes one), how many of the
+  // staged desks are real, and whether another can be added.
+  property var baseSlots: []
+  property var liveIds: []
+  property int realDesks: 0
+  property bool canAddDesk: false
+  // SUPER+1…0 reach ten desks on stock Omarchy, and its strip lists no more.
+  readonly property int deskLimit: 10
+  readonly property string deskLimitNote: "No spare workspace number up to " + deskLimit
 
   // Undo (Dave, 2026-09-19: "ctrl-z to undo the last change you made to anything"). One history
   // for the open panel, oldest first. A staged change is undone by putting back a snapshot of
@@ -350,6 +367,7 @@ Panel {
     refill(lmC, state.C)
     refill(lmR, state.R)
     refill(lmW, state.W)
+    syncDeskSlots()
     mode = state.mode
     spacerDeletes = state.spacerDeletes
     deskMerges = state.deskMerges
@@ -479,7 +497,9 @@ Panel {
   function openMenu(label, choices, anchorItem) {
     menuLabel = label
     menuChoices = choices
+    // On the first choice that can be taken (a new desk's first three are dimmed).
     menuCursor = 0
+    while (menuCursor < choices.length - 1 && choices[menuCursor].enabled === false) menuCursor++
     menuAnchor = anchorItem.mapToItem(keyCatcher, 0, anchorItem.height)
     tileMenu.open()
   }
@@ -503,6 +523,14 @@ Panel {
 
   onCursorChanged: Qt.callLater(focusIconCursor)
   onCurLaneChanged: Qt.callLater(focusIconCursor)
+  // Leaving a name field hands the keys back to the panel: the field that held them is hidden,
+  // and without this nothing had them — a new desk opens straight into its name, so Escape from
+  // there left every key dead.
+  onWsEditingChanged: if (wsEditing < 0) Qt.callLater(function() {
+    if (!opened || wsEditing >= 0) return
+    if (iconsOnly) focusIconCursor()
+    else keyCatcher.forceActiveFocus(Qt.OtherFocusReason)
+  })
 
   // A tile's menu: the eye's hide/show and, for a spacer, the x's delete.
   function openTileMenu(lane, i, slotItem) {
@@ -538,25 +566,29 @@ Panel {
     if (i < 0 || i >= lmW.count || deskDrag.active) return
     deskDrag.reset()
     var d = lmW.get(i)
-    var n = d.num, name = d.name, pin = d.bgPin, hasSnap = d.hasSnap
+    var n = d.num, name = d.name, pin = d.bgPin, hasSnap = d.hasSnap, fresh = d.fresh
     curLane = "W"
     cursor = i
-    var choices = [{ glyph: iconImage, label: "Background", enabled: true,
+    // A new desk has nothing to go to, pin or record until it is made; those stay listed, dimmed.
+    var notYet = fresh ? "not made yet" : ""
+    var choices = [{ glyph: iconImage, label: "Background", note: notYet, enabled: !fresh,
                      act: function() { openBgPicker(n, name, pin) } }]
-    if (canRename)
+    if (canRename || fresh)
       choices.push({ glyph: iconPencil, label: "Rename", enabled: true,
                      act: function() { wsEditing = i } })
-    choices.push({ glyph: iconSave, label: "Save layout", enabled: true,
+    choices.push({ glyph: iconSave, label: "Save layout", note: notYet, enabled: !fresh,
                    act: function() { wsSave(n) } })
-    choices.push({ glyph: iconRestore, label: "Restore layout", note: hasSnap ? "" : "no recording",
-                   enabled: hasSnap, act: function() { wsRestore(n) } })
+    choices.push({ glyph: iconRestore, label: "Restore layout",
+                   note: notYet || (hasSnap ? "" : "no recording"),
+                   enabled: hasSnap && !fresh, act: function() { wsRestore(n) } })
     if (canEditDesks) {
+      var deletable = fresh || realDesks > 1
       choices.push({ glyph: "\u2190", label: "Move left", enabled: i > 0,
                      act: function() { moveDesk(i, i - 1) } })
       choices.push({ glyph: "\u2192", label: "Move right", enabled: i + 1 < lmW.count,
                      act: function() { moveDesk(i, i + 1) } })
-      choices.push({ glyph: iconTrash, label: "Delete workspace", note: lmW.count > 1 ? "" : "the only one",
-                     enabled: lmW.count > 1, act: function() { requestDeleteDesk(i) } })
+      choices.push({ glyph: iconTrash, label: "Delete workspace", note: deletable ? "" : "the only one",
+                     enabled: deletable, act: function() { requestDeleteDesk(i) } })
     }
     openMenu(name, choices, chipItem)
   }
@@ -695,11 +727,13 @@ Panel {
       slots.push(w.id)
       lmW.append({ num: w.id, name: displayName(w.id, w.name), rawName: String(w.name || ""),
                    focused: w.id === active, hasSnap: snaps[w.id] === true,
-                   bgPin: String(pins[w.id] || ""), windows: w.windows || 0 })
+                   bgPin: String(pins[w.id] || ""), windows: w.windows || 0, fresh: false })
     }
-    deskSlots = slots
+    baseSlots = slots
+    liveIds = list.map(function(w) { return w.id })
     deskMerges = ({})
     canEditDesks = pinned.length === 0 || hookPresent === true
+    syncDeskSlots()
   }
 
   function displayName(n, raw) {
@@ -721,13 +755,20 @@ Panel {
   }
 
   // Where a deleted desk's windows go: the desk before it in the new order, or the one after
-  // it when it is the first.
-  function mergeTargetFor(i) { return i > 0 ? i - 1 : i + 1 }
+  // it when it is the first — passing over new desks, which do not exist yet to take them.
+  function mergeTargetFor(i) {
+    for (var j = i - 1; j >= 0; j--) if (!lmW.get(j).fresh) return j
+    for (var k = i + 1; k < lmW.count; k++) if (!lmW.get(k).fresh) return k
+    return -1
+  }
 
   // Asks first (Dave, 2026-09-19: "When deleting a workspace, it should ask if you are sure"),
-  // and says where the windows will go.
+  // and says where the windows will go. A new desk goes without asking: there is nothing on it,
+  // and it does not exist yet.
   function requestDeleteDesk(i) {
-    if (!canEditDesks || i < 0 || i >= lmW.count || lmW.count < 2) return
+    if (!canEditDesks || i < 0 || i >= lmW.count) return
+    if (lmW.get(i).fresh) { removeFreshDesk(i); return }
+    if (realDesks < 2) return
     var d = lmW.get(i), into = lmW.get(mergeTargetFor(i))
     var num = d.num
     var where = "\u201C" + into.name + "\u201D"
@@ -739,7 +780,7 @@ Panel {
   }
 
   function deleteDesk(i) {
-    if (!canEditDesks || i < 0 || i >= lmW.count || lmW.count < 2) return
+    if (!canEditDesks || i < 0 || i >= lmW.count || lmW.get(i).fresh || realDesks < 2) return
     var d = lmW.get(i), t = mergeTargetFor(i)
     var num = d.num, name = d.name, windows = d.windows
     var intoNum = lmW.get(t).num, intoWindows = lmW.get(t).windows
@@ -751,6 +792,7 @@ Panel {
       deskMerges = merges
       lmW.setProperty(t, "windows", intoWindows + windows)
       lmW.remove(i)
+      syncDeskSlots()
       wsEditing = -1
       if (curLane === "W") cursor = Math.max(0, Math.min(lmW.count - 1, cursor))
     })
@@ -758,16 +800,98 @@ Panel {
   }
 
   // Whether apply() has desks to renumber: an order that differs from the one the panel
-  // opened with, or a deleted desk.
+  // opened with, a deleted desk, or a new one.
   function desksChanged() {
     for (var k in deskMerges) return true
-    for (var i = 0; i < lmW.count; i++) if (lmW.get(i).num !== deskSlots[i]) return true
+    for (var i = 0; i < lmW.count; i++)
+      if (lmW.get(i).fresh || lmW.get(i).num !== deskSlots[i]) return true
     return false
+  }
+
+  // ── desks: adding ───────────────────────────────────────────────────────────────
+
+  // Spare numbers for new desks: above every desk the panel opened with, never one another
+  // workspace has (a second screen's, the workout's while it runs), and no higher than deskLimit.
+  function spareDeskNumbers() {
+    var top = 0, out = []
+    for (var i = 0; i < baseSlots.length; i++) top = Math.max(top, baseSlots[i])
+    for (var n = top + 1; n <= deskLimit; n++) if (liveIds.indexOf(n) < 0) out.push(n)
+    return out
+  }
+
+  // A new desk stands in the order by a spare number — bin/ws-renumber's --add takes it, and it
+  // keeps rowForWs working — and the new desks hold the lowest spare numbers between them, so one
+  // removed leaves no gap in the numbers the desks end up with. Which new desk holds which number
+  // does not matter: the Nth desk takes the Nth number whatever it stood for. Also counts the real
+  // desks (the only real one cannot be deleted) and works out whether another desk fits.
+  // Called whenever a desk comes or goes, and after an undo.
+  function syncDeskSlots() {
+    var spare = spareDeskNumbers(), fresh = [], real = 0
+    for (var i = 0; i < lmW.count; i++) {
+      if (lmW.get(i).fresh) fresh.push({ row: i, num: lmW.get(i).num })
+      else real++
+    }
+    fresh.sort(function(a, b) { return a.num - b.num })
+    var slots = baseSlots.slice()
+    for (var k = 0; k < fresh.length && k < spare.length; k++) {
+      if (fresh[k].num !== spare[k]) lmW.setProperty(fresh[k].row, "num", spare[k])
+      slots.push(spare[k])
+    }
+    deskSlots = slots
+    realDesks = real
+    canAddDesk = canEditDesks && fresh.length < spare.length
+  }
+
+  // The + button: a new desk at the end of the order, and straight into naming it.
+  function addDesk() {
+    if (!canAddDesk || iconDrag.busy || deskDrag.busy) return
+    tileMenu.close()
+    wsEditing = -1
+    change("Add workspace", function() {
+      lmW.append({ num: 99999, name: "New workspace", rawName: "", focused: false, hasSnap: false,
+                   bgPin: "", windows: 0, fresh: true })
+      syncDeskSlots()
+      curLane = "W"
+      cursor = lmW.count - 1
+    })
+    wsEditing = lmW.count - 1
+    keyCatcher.Accessible.announce("New workspace added. Type its name.", Accessible.Polite)
+  }
+
+  function removeFreshDesk(i) {
+    if (i < 0 || i >= lmW.count || !lmW.get(i).fresh) return
+    var name = lmW.get(i).name
+    change("Remove " + name, function() {
+      lmW.remove(i)
+      syncDeskSlots()
+      wsEditing = -1
+      if (curLane === "W") cursor = Math.max(0, Math.min(lmW.count - 1, cursor))
+    })
+    keyCatcher.Accessible.announce(name + " removed. Control Z undoes it.", Accessible.Polite)
+  }
+
+  // A new desk's name is staged with it and given to it as it is made. Held to what
+  // workspace-edit accepts, so one character cannot stop the whole pass: no quote, backslash or
+  // control character, and 24 characters at most.
+  function renameFreshDesk(i, name) {
+    name = String(name || "").replace(/["\\\u0000-\u001f\u007f]/g, "").trim().slice(0, 24).trim()
+    if (name === "" || i < 0 || i >= lmW.count || name === lmW.get(i).rawName) return
+    var shown = lmW.get(i).name
+    change("Rename " + shown, function() {
+      lmW.setProperty(i, "rawName", name)
+      lmW.setProperty(i, "name", name)
+    })
+  }
+
+  function isFresh(n) {
+    var m = rowForWs(n)
+    return m >= 0 && lmW.get(m).fresh === true
   }
 
   // ── desks: at once ──────────────────────────────────────────────────────────────
 
   function wsFocus(n) {
+    if (isFresh(n)) return
     runJob(["hyprctl", "dispatch", 'hl.dsp.focus({ workspace = "' + n + '" })'])
   }
 
@@ -775,7 +899,7 @@ Panel {
   // when there was none).
   function wsSave(n) {
     var m = rowForWs(n)
-    if (m < 0) return
+    if (m < 0 || lmW.get(m).fresh) return
     var had = lmW.get(m).hasSnap, name = lmW.get(m).name
     var file = snapDir + "/ws" + n + ".json"
     var key = "snap-" + n + "-" + Date.now()
@@ -800,6 +924,7 @@ Panel {
   }
 
   function wsRestore(n) {
+    if (isFresh(n)) return
     runJob(["sh", "-c", '"$HOME/.config/omarchy/workspace-layout/ws-layout" restore "$0"', String(n)])
   }
 
@@ -807,6 +932,7 @@ Panel {
     name = String(name || "").trim()
     var m = rowForWs(n)
     if (name === "" || m < 0) return
+    if (lmW.get(m).fresh) { renameFreshDesk(m, name); return }
     var before = lmW.get(m).rawName, shown = lmW.get(m).name
     if (name === before) return
     applyRename(n, name)
@@ -824,6 +950,7 @@ Panel {
     lmW.setProperty(m, "name", displayName(n, raw))
   }
   function openBgPicker(n, name, pin) {
+    if (isFresh(n)) return
     console.log("BARB openBgPicker", n, name, pin)
     bgPickingName = name
     bgPickingPin = pin
@@ -1110,6 +1237,8 @@ Panel {
     for (var i = 0; i < lmW.count; i++) order.push(lmW.get(i).num)
     argv.push(order.join(","))
     for (var k in deskMerges) argv.push("--delete", k + ":" + deskMerges[k])
+    for (var j = 0; j < lmW.count; j++)
+      if (lmW.get(j).fresh) argv.push("--add", lmW.get(j).num + ":" + lmW.get(j).rawName)
     Quickshell.execDetached(["sh", "-c", 'exec "$0" "$@" >/dev/null 2>&1'].concat(argv))
   }
 
@@ -1443,6 +1572,92 @@ Panel {
     }
   }
 
+  // "+ Add workspace" at the foot of the desks column (Dave, 2026-09-26): drawn like the
+  // add-spacer row, and set level with the foot of the tallest lane column, where he drew it —
+  // the filler above it works that out from the lane lists alone, not from the row of columns
+  // it sits in, which would make its height depend on itself. Stages a new desk at the end.
+  component AddDesk: Column {
+    id: addDeskFoot
+
+    property Item deskList: null
+    width: parent.width
+    visible: root.canEditDesks
+
+    Item {
+      width: 1
+      height: addDeskFoot.deskList ? Math.max(0, root.laneListsHeight() - addDeskFoot.deskList.height) : 0
+    }
+
+    Item {
+      width: parent.width
+      height: Style.space(34)
+
+      Rectangle {
+        width: parent.width
+        height: Style.space(30)
+        y: Style.space(2)
+        radius: Style.cornerRadius
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                       addDeskRowArea.containsMouse && root.canAddDesk ? 0.10 : 0.04)
+
+        Item {
+          id: addDeskGlyphSlot
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(22)
+          height: addDeskPlus.implicitHeight
+
+          Text {
+            id: addDeskPlus
+            anchors.centerIn: parent
+            text: "+"
+            textFormat: Text.PlainText
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            color: root.foreground
+            opacity: !root.canAddDesk ? 0.2 : addDeskRowArea.containsMouse ? 0.85 : 0.4
+          }
+        }
+
+        Text {
+          anchors.left: addDeskGlyphSlot.right
+          anchors.leftMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Add workspace"
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          color: root.foreground
+          opacity: !root.canAddDesk ? 0.2 : addDeskRowArea.containsMouse ? 0.9 : 0.45
+        }
+      }
+
+      MouseArea {
+        id: addDeskRowArea
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: root.canAddDesk ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: root.addDesk()
+      }
+
+      PanelToolTip {
+        visible: addDeskRowArea.containsMouse && !root.canAddDesk
+        text: root.deskLimitNote
+        fontFamily: root.fontFamily
+      }
+    }
+  }
+
+  // The tallest of the lane lists beside the desks column, for AddDesk's filler.
+  function laneListsHeight() {
+    var tallest = 0
+    if (mode !== "1") tallest = Math.max(tallest, lviewL.height)
+    if (mode !== "2") tallest = Math.max(tallest, lviewC.height)
+    if (mode !== "3") tallest = Math.max(tallest, lviewR.height)
+    return tallest
+  }
+
   // A glyph centred on its ink rather than its line box: an icon font's glyphs sit
   // anywhere in their em box, so centring the Text item leaves them visibly off (Dave,
   // 2026-09-12: "pixel perfect visually centered vertically between the lines").
@@ -1636,10 +1851,25 @@ Panel {
     id: drow
 
     property alias align: drow.alignment
+    // The chips keep clear of the add button: the row gives up its width on the button's side —
+    // on both sides when the desks are centred, so they stay centred as they are on the bar, until
+    // they no longer fit that way; then they are centred in the space left of the button. When
+    // even that is too narrow, the button drops its words and keeps the +.
+    readonly property real addReserve: addDeskTile.visible ? addDeskTile.width + Style.space(8) : 0
+    readonly property bool addCompact:
+      chipsWidth > parent.width - (addDeskWords.advanceWidth + Style.space(28) + 2 * tileInset)
+    readonly property real chipsWidth: {
+      void layoutVersion
+      var total = Math.max(0, count - 1) * spacing
+      for (var i = 0; i < count; i++) total += widthOf(i)
+      return total
+    }
+    readonly property bool centredFits: chipsWidth <= parent.width - 2 * addReserve
     lane: "W"
     controller: deskDrag
     model: lmW
-    width: parent.width
+    x: align === "left" || (align === "center" && !centredFits) ? 0 : addReserve
+    width: parent.width - (align === "center" && centredFits ? 2 : 1) * addReserve
     variableWidths: true
     spacing: Style.space(4)
     reorderable: root.canEditDesks
@@ -1685,7 +1915,7 @@ Panel {
         : (root.curLane === "W" && root.cursor === index) || drow.hoveredIndex === index
           ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
           : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-      Component.onCompleted: ready = true
+      Component.onCompleted: { ready = true; Qt.callLater(function() { if (chip) chip.takeRename() }) }
 
       Behavior on color { ColorAnimation { duration: 80 } }
       Behavior on x {
@@ -1745,15 +1975,84 @@ Panel {
       }
 
       // The rename lands here from the menu: fill the field and hand it the keys.
-      // Only the row on screen answers — the other two slots hold hidden twins.
+      // Only the row on screen answers — the other two slots hold hidden twins. A new desk's
+      // chip can be made after it is already being named, so it checks once on arrival too.
+      function takeRename() {
+        if (root.wsEditing !== chip.index || !drow.visible) return
+        chipEdit.text = chip.model.name
+        chipEdit.forceActiveFocus()
+        chipEdit.selectAll()
+      }
       Connections {
         target: root
-        function onWsEditingChanged() {
-          if (root.wsEditing !== chip.index || !drow.visible) return
-          chipEdit.text = chip.model.name
-          chipEdit.forceActiveFocus()
-          chipEdit.selectAll()
+        function onWsEditingChanged() { chip.takeRename() }
+      }
+    }
+
+    // "+ Add workspace" (Dave, 2026-09-26, drawn at the strip row's right-hand end): the
+    // add-spacer chip's twin, at the row's far end from the edge the desks hug — the right, or
+    // the left in mode 3. The new desk joins the end of the order wherever the button sits.
+    TextMetrics {
+      id: addDeskWords
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      text: "+  Add workspace"
+    }
+
+    Item {
+      id: addDeskTile
+      z: 2
+      visible: root.canEditDesks
+      // At the slot's own edge, outside the row's narrowed width.
+      x: drow.align === "right" ? -drow.x : drow.parent.width - drow.x - width
+      width: addDeskChip.width + 2 * drow.tileInset
+      height: drow.height
+
+      Rectangle {
+        id: addDeskChip
+        x: drow.tileInset
+        y: root.rowPad
+        width: addDeskLabel.implicitWidth + Style.space(20)
+        height: root.tileHeight
+        radius: Style.cornerRadius
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+                       addDeskArea.containsMouse && root.canAddDesk ? 0.10 : 0.04)
+
+        Behavior on color { ColorAnimation { duration: 80 } }
+
+        TextMetrics {
+          id: addDeskCapBand
+          font: addDeskLabel.font
+          text: "H"
         }
+
+        Text {
+          id: addDeskLabel
+          anchors.horizontalCenter: parent.horizontalCenter
+          y: Math.round(addDeskChip.height / 2 - (addDeskLabel.baselineOffset + addDeskCapBand.tightBoundingRect.y
+                                                  + addDeskCapBand.tightBoundingRect.height / 2))
+          text: drow.addCompact ? "+" : addDeskWords.text
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          color: root.foreground
+          opacity: !root.canAddDesk ? 0.2 : addDeskArea.containsMouse ? 0.9 : 0.45
+        }
+      }
+
+      MouseArea {
+        id: addDeskArea
+        anchors.fill: parent
+        enabled: !deskDrag.busy
+        hoverEnabled: true
+        cursorShape: root.canAddDesk ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: root.addDesk()
+      }
+
+      PanelToolTip {
+        visible: addDeskArea.containsMouse && (!root.canAddDesk || drow.addCompact)
+        text: root.canAddDesk ? "Add workspace" : root.deskLimitNote
+        fontFamily: root.fontFamily
       }
     }
   }
@@ -1947,6 +2246,10 @@ Panel {
           font.pixelSize: Style.font.body
           color: root.foreground
           onVisibleChanged: if (visible && wrow.model && wrow.model.name !== undefined) { text = wrow.model.name; forceActiveFocus(); selectAll() }
+          // A new desk's row can be made already being named, when visible never changes.
+          Component.onCompleted: Qt.callLater(function() {
+            if (wedit && wedit.visible && wrow.model) { wedit.text = wrow.model.name; wedit.forceActiveFocus(); wedit.selectAll() }
+          })
           onAccepted: { root.wsRename(wrow.model.num, text); root.wsEditing = -1 }
           Keys.onEscapePressed: root.wsEditing = -1
         }
@@ -1955,10 +2258,12 @@ Panel {
           id: wimg
           // No rename on this machine, no gap for it: skip the hidden pencil (anchors keep
           // an invisible item's width — the MacBook showed an empty column, 2026-09-01).
-          anchors.right: root.canRename ? wpencil.left : wsave.left
+          // A new desk can always be named: its name is staged with it.
+          anchors.right: root.canRename || wrow.model.fresh ? wpencil.left : wsave.left
           anchors.verticalCenter: parent.verticalCenter
           iconText: root.iconImage
-          tooltipText: "Background"
+          tooltipText: wrow.model.fresh ? "Background — once the workspace is made" : "Background"
+          opacity: wrow.model.fresh ? 0.3 : 1
           // Uniform with the other desk buttons: with every desk pinned, the old
           // accent-when-pinned tint was always on — a signal carrying nothing
           // (Dave queried the odd colour, 2026-09-01). The picker's highlighted
@@ -1967,12 +2272,12 @@ Panel {
           hoverColor: root.accent
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          onClicked: root.openBgPicker(wrow.model.num, wrow.model.name, wrow.model.bgPin)
+          onClicked: if (!wrow.model.fresh) root.openBgPicker(wrow.model.num, wrow.model.name, wrow.model.bgPin)
         }
 
         PanelActionButton {
           id: wpencil
-          visible: root.canRename
+          visible: root.canRename || wrow.model.fresh
           anchors.right: wsave.left
           anchors.verticalCenter: parent.verticalCenter
           iconText: root.iconPencil
@@ -1989,7 +2294,8 @@ Panel {
           anchors.right: wrestore.left
           anchors.verticalCenter: parent.verticalCenter
           iconText: root.iconSave
-          tooltipText: "Save layout (HYPER+S)"
+          tooltipText: wrow.model.fresh ? "Save layout — once the workspace is made" : "Save layout (HYPER+S)"
+          opacity: wrow.model.fresh ? 0.3 : 1
           foreground: Qt.darker(root.foreground, 1.8)
           hoverColor: root.accent
           fontFamily: root.fontFamily
@@ -2004,7 +2310,8 @@ Panel {
           anchors.rightMargin: root.canEditDesks ? 0 : Style.space(2)
           anchors.verticalCenter: parent.verticalCenter
           iconText: root.iconRestore
-          tooltipText: wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
+          tooltipText: wrow.model.fresh ? "Restore layout — once the workspace is made"
+            : wrow.model.hasSnap ? "Restore layout (HYPER+R)" : "No recording yet"
           foreground: Qt.darker(root.foreground, 1.8)
           hoverColor: root.accent
           fontFamily: root.fontFamily
@@ -2021,12 +2328,13 @@ Panel {
           anchors.rightMargin: Style.space(2)
           anchors.verticalCenter: parent.verticalCenter
           iconText: root.iconTrash
-          tooltipText: dlist.count > 1 ? "Delete workspace" : "The only workspace cannot be deleted"
+          readonly property bool deletable: wrow.model.fresh || root.realDesks > 1
+          tooltipText: deletable ? "Delete workspace" : "The only workspace cannot be deleted"
           foreground: Qt.darker(root.foreground, 1.8)
           hoverColor: root.urgent
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          opacity: dlist.count > 1 ? 1 : 0.3
+          opacity: deletable ? 1 : 0.3
           onClicked: root.requestDeleteDesk(wrow.index)
         }
       }
@@ -2432,7 +2740,9 @@ Panel {
 
             AddSpacer { lane: "L"; visible: root.mode !== "1" }
 
-            DeskList { width: parent.width; visible: root.mode === "1" }
+            DeskList { id: deskListL; width: parent.width; visible: root.mode === "1" }
+
+            AddDesk { deskList: deskListL; visible: root.canEditDesks && root.mode === "1" }
           }
 
           Rectangle {
@@ -2478,7 +2788,9 @@ Panel {
 
             AddSpacer { lane: "C"; visible: root.mode !== "2" }
 
-            DeskList { width: parent.width; visible: root.mode === "2" }
+            DeskList { id: deskListC; width: parent.width; visible: root.mode === "2" }
+
+            AddDesk { deskList: deskListC; visible: root.canEditDesks && root.mode === "2" }
           }
 
           Rectangle {
@@ -2524,7 +2836,9 @@ Panel {
 
             AddSpacer { lane: "R"; visible: root.mode !== "3" }
 
-            DeskList { width: parent.width; visible: root.mode === "3" }
+            DeskList { id: deskListR; width: parent.width; visible: root.mode === "3" }
+
+            AddDesk { deskList: deskListR; visible: root.canEditDesks && root.mode === "3" }
           }
         }
 

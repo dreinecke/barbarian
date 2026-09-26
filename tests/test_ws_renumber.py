@@ -38,31 +38,70 @@ class Plan(unittest.TestCase):
         self.m = load(self.tmp)
 
     def test_reorder_permutes_the_same_numbers(self):
-        order, merges, new_of, moves, deletes = self.m.parse_plan("1,3,2,4", [])
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("1,3,2,4", [])
         self.assertEqual(new_of, {1: 1, 3: 2, 2: 3, 4: 4})
         self.assertEqual(moves, {3: 2, 2: 3})
         self.assertEqual(deletes, {})
 
     def test_delete_closes_the_numbers_up(self):
-        order, merges, new_of, moves, deletes = self.m.parse_plan("1,2,4,5", ["3:2"])
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("1,2,4,5", ["3:2"])
         self.assertEqual(new_of, {1: 1, 2: 2, 4: 3, 5: 4})
         self.assertEqual(moves, {4: 3, 5: 4})
         # Desk 3's windows went to desk 2, which keeps its number.
         self.assertEqual(deletes, {3: 2})
 
     def test_deleted_desks_windows_follow_their_desk_to_its_new_number(self):
-        order, merges, new_of, moves, deletes = self.m.parse_plan("4,1,2", ["3:4"])
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("4,1,2", ["3:4"])
         self.assertEqual(new_of, {4: 1, 1: 2, 2: 3})
         self.assertEqual(deletes, {3: 1})
 
     def test_gaps_in_the_numbers_are_kept(self):
-        order, merges, new_of, moves, deletes = self.m.parse_plan("5,1,3", [])
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("5,1,3", [])
         self.assertEqual(new_of, {5: 1, 1: 3, 3: 5})
 
     def test_refuses_a_plan_that_makes_no_sense(self):
         for order, dels in [("", []), ("1,2,2", []), ("1,2", ["2:1"]), ("1,2", ["3:4"]), ("0,1", [])]:
             with self.assertRaises(self.m.Failure, msg=f"{order} {dels}"):
                 self.m.parse_plan(order, dels)
+
+    def test_a_new_desk_at_the_end_keeps_its_number_and_moves_nothing(self):
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("1,2,3,4", [], ["4:Hazel"])
+        self.assertEqual(new_of, {1: 1, 2: 2, 3: 3, 4: 4})
+        self.assertEqual(moves, {})
+        self.assertEqual(adds, {4: "Hazel"})
+
+    def test_a_new_desk_first_takes_1_and_the_rest_move_up(self):
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("4,1,2,3", [], ["4:"])
+        self.assertEqual(moves, {1: 2, 2: 3, 3: 4})
+        self.assertEqual(adds, {1: ""})
+
+    def test_a_new_desk_skips_a_number_another_workspace_has(self):
+        # Desks 1–5 with a second screen's workspace on 6: the panel names the new desk 7.
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("7,1,2,3,4,5", [], ["7:New"])
+        self.assertEqual(moves, {1: 2, 2: 3, 3: 4, 4: 5, 5: 7})
+        self.assertEqual(adds, {1: "New"})
+
+    def test_a_new_desk_beside_a_deleted_one_closes_the_numbers_up(self):
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("1,2,4,5,6", ["3:2"], ["6:New"])
+        self.assertEqual(moves, {4: 3, 5: 4})
+        self.assertEqual(deletes, {3: 2})
+        self.assertEqual(adds, {5: "New"})
+
+    def test_a_name_with_a_colon_survives(self):
+        self.assertEqual(self.m.parse_plan("1,2", [], ["2:Mail: work"])[5], {2: "Mail: work"})
+
+    def test_refuses_a_new_desk_plan_that_makes_no_sense(self):
+        for order, dels, adds in [("1,2", [], ["3:X"]),         # not in the order
+                                  ("1,3", ["2:3"], ["3:X"]),    # windows sent to a desk not made yet
+                                  ("3", [], ["3:X"]),           # no existing desk stays
+                                  ("1,3", [], ["3:X", "3:Y"]),  # named twice
+                                  ("1,3", [], ["x:Y"])]:
+            with self.assertRaises(self.m.Failure, msg=f"{order} {dels} {adds}"):
+                self.m.parse_plan(order, dels, adds)
+
+    def test_the_hooks_hear_of_a_new_desk_with_its_final_number(self):
+        self.assertEqual(self.m.hook_args({1: 2}, {}, {1: "New", 3: ""}),
+                         ["move:1:2", "add:1:New", "add:3"])
 
 
 class Files(unittest.TestCase):
@@ -103,6 +142,14 @@ class Files(unittest.TestCase):
         # Swapping back leaves every desk on its own image, and the file goes.
         self.m.renumber_auto_index({1: 1, 3: 2, 2: 3}, {3: 2, 2: 3}, {})
         self.assertFalse((self.bg / "auto-index").exists())
+
+    def test_a_new_desk_put_first_takes_an_image_no_other_desk_has(self):
+        order, merges, new_of, moves, deletes, adds = self.m.parse_plan("4,1,2,3", [], ["4:"])
+        self.m.renumber_auto_index(new_of, moves, deletes)
+        index = (self.bg / "auto-index").read_text()
+        # The new desk 1 shows the theme's 4th image; desks 1–3, now 2–4, keep theirs.
+        for line in ("1 4\n", "2 1\n", "3 2\n", "4 3\n"):
+            self.assertIn(line, index)
 
     def test_layout_rule_moves_with_its_desk(self):
         self.m.renumber_layouts({2: 4, 4: 2}, {})

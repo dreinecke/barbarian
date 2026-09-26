@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
-"""ws-renumber — give the desks a new order, and delete desks, without breaking anything.
+"""ws-renumber — give the desks a new order, delete desks and add them, without breaking anything.
 
 Barbarian's desk reordering and deleting (Dave, 2026-09-19: "such workspace reordering must take
-care of everything behind the scenes to ensure that nothing breaks"). The panel stages the new
-order and closes; this script, run detached, does the rest in one pass.
+care of everything behind the scenes to ensure that nothing breaks"), and adding (Dave,
+2026-09-26: "Barbarian should have a [+ Add workspace] button"). The panel stages the new order
+and closes; this script, run detached, does the rest in one pass.
 
     ws-renumber --order 1,3,2,4,6,7,8 --delete 5:4
+    ws-renumber --order 1,9,2,3 --add 9:Hazel
 
 --order lists the surviving desks by their CURRENT numbers, in their new order. --delete names a
-desk to remove and the desk (current number, one that survives) its windows move to. The desks
-keep the numbers they had between them: the Nth desk in the new order takes the Nth smallest of
-those numbers, so after a delete the numbers close up and SUPER+N still reaches the Nth desk on
-the bar. A workspace that is not a desk (the workout's 9, a second screen's 10) is never touched.
+desk to remove and the desk (current number, one that survives) its windows move to. --add names a
+new desk by a spare number that no workspace has (the panel takes the first above every desk), with
+the name it is to have after the colon (none: the bare number); that number stands for the new desk
+in --order. The desks keep the numbers they had between them: the Nth desk in the new order takes
+the Nth smallest of those numbers, so after a delete the numbers close up and SUPER+N still reaches
+the Nth desk on the bar, and a new desk put first takes 1 while the rest move up one. A workspace
+that is not a desk (the workout's 9, a second screen's 10) is never touched.
+
+A NEW DESK IS MADE LAST, once every other desk has its number. Where a hook has written it into the
+config, the final reload makes it; anywhere else it is made here, persistent until Hyprland next
+reloads its config — a machine without a desk table has nowhere to keep an empty desk.
 
 ⚠️ A DESK IS RENUMBERED IN PLACE, NOT REBUILT. `hl.dsp.workspace.change_id` gives a workspace a
 new number with its windows and its whole tiling tree untouched, so a desk arrives at its new
@@ -40,6 +49,8 @@ files, and an unplanned reload in the middle would re-create desks under the par
 itself — the layout `omarchy-hook` uses) runs first, with one argument per changed desk:
     move:OLD:NEW      the desk numbered OLD is now NEW
     delete:OLD:NEW    the desk numbered OLD is gone; its windows are on the desk now numbered NEW
+    add:NEW:NAME      a new, empty desk numbered NEW (after the moves), called NAME; add:NEW when
+                      it has no name
 The hooks run BEFORE anything live changes, and a hook that fails stops the whole pass with nothing
 on screen changed — `omarchy-hook` itself cannot be used for this, because it swallows failures.
 
@@ -186,12 +197,22 @@ def change_id(old, new):
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
-def parse_plan(order_arg, delete_args):
+def parse_plan(order_arg, delete_args, add_args=()):
+    """new_of covers every desk in the order, a new one by its spare number; moves only the desks
+    that exist, since a new desk has nothing to move; adds is final number → name."""
     order = [int(n) for n in order_arg.split(",") if n.strip() != ""]
     merges = {}
     for spec in delete_args:
         old, into = (int(part) for part in spec.split(":"))
         merges[old] = into
+    fresh = {}
+    for spec in add_args:
+        number, _, name = spec.partition(":")
+        if not number.strip().isdigit():
+            raise Failure(f"Not a new desk: {spec!r} (expected NUMBER:NAME)")
+        if int(number) in fresh:
+            raise Failure(f"New desk {number} is named twice.")
+        fresh[int(number)] = name
     everyone = order + list(merges)
     if not order:
         raise Failure("At least one desk has to stay.")
@@ -199,14 +220,22 @@ def parse_plan(order_arg, delete_args):
         raise Failure(f"A desk is named twice: order {order}, deleted {sorted(merges)}")
     if any(n < 1 for n in everyone):
         raise Failure("Desk numbers start at 1.")
+    for n in fresh:
+        if n not in order:
+            raise Failure(f"New desk {n} has no place in the order.")
+    if all(n in fresh for n in order):
+        raise Failure("At least one desk that exists has to stay.")
     for old, into in merges.items():
         if into not in order:
             raise Failure(f"Desk {old}'s windows are meant for desk {into}, which is not staying.")
+        if into in fresh:
+            raise Failure(f"Desk {old}'s windows are meant for a desk that does not exist yet.")
     slots = sorted(everyone)[:len(order)]
     new_of = {old: slots[i] for i, old in enumerate(order)}
-    moves = {old: new for old, new in new_of.items() if old != new}
+    moves = {old: new for old, new in new_of.items() if old != new and old not in fresh}
     deletes = {old: new_of[into] for old, into in merges.items()}
-    return order, merges, new_of, moves, deletes
+    adds = {new_of[n]: name for n, name in fresh.items()}
+    return order, merges, new_of, moves, deletes, adds
 
 
 # ── the hook ─────────────────────────────────────────────────────────────────
@@ -222,9 +251,15 @@ def hook_scripts():
     return found
 
 
-def run_hooks(moves, deletes):
+def hook_args(moves, deletes, adds):
     args = [f"move:{old}:{new}" for old, new in sorted(moves.items())]
     args += [f"delete:{old}:{new}" for old, new in sorted(deletes.items())]
+    args += [f"add:{new}:{name}" if name else f"add:{new}" for new, name in sorted(adds.items())]
+    return args
+
+
+def run_hooks(moves, deletes, adds):
+    args = hook_args(moves, deletes, adds)
     for script in hook_scripts():
         log(f"hook {script} {' '.join(args)}")
         result = subprocess.run(["bash", str(script), *args], capture_output=True, text=True)
@@ -318,30 +353,51 @@ def plain_name(workspace):
     return name == "" or name == str(workspace["id"])
 
 
+def make_desks(adds, monitor):
+    """Each new desk, once the others have their numbers. The config makes one a hook wrote into it
+    at the reload; one it does not have is made here, on the desks' screen, by a persistent rule that
+    lasts until Hyprland next reloads its config. Named either way: a rule names a desk only as it
+    is made, and a desk with no name gets its bare number back."""
+    if not adds:
+        return
+    alive = {w["id"] for w in query("workspaces")}
+    for n, name in sorted(adds.items()):
+        if n not in alive:
+            on = f", monitor = {lua_string(monitor)}" if monitor else ""
+            evaluate(f'hl.workspace_rule({{ workspace = "{n}", persistent = true{on} }})')
+            log(f"desk {n}: made for this session (the config does not name it)")
+        dispatch(f'hl.dsp.workspace.rename({{ workspace = "{n}", name = {lua_string(name or str(n))} }})')
+        log(f"desk {n}: added" + (f" as {name}" if name else ""))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--order", required=True)
     parser.add_argument("--delete", action="append", default=[])
+    parser.add_argument("--add", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    order, merges, new_of, moves, deletes = parse_plan(args.order, args.delete)
-    log(f"plan: order {order} · moves {moves} · deleted {deletes}")
-    if not moves and not deletes:
+    order, merges, new_of, moves, deletes, adds = parse_plan(args.order, args.delete, args.add)
+    log(f"plan: order {order} · moves {moves} · deleted {deletes} · added {adds}")
+    if not moves and not deletes and not adds:
         log("nothing to do")
         return
     if args.dry_run:
-        for old, new in sorted(moves.items()):
-            print(f"move:{old}:{new}")
-        for old, new in sorted(deletes.items()):
-            print(f"delete:{old}:{new}")
+        for line in hook_args(moves, deletes, adds):
+            print(line)
         return
 
     workspaces = {w["id"]: w for w in query("workspaces")}
+    fresh = {int(spec.partition(":")[0]) for spec in args.add}
+    taken = sorted(n for n in fresh if n in workspaces)
+    if taken:
+        raise Failure(f"workspace {taken[0]} exists, so it cannot stand for a new desk")
+    existing = [n for n in order if n not in fresh]
     windows = query("clients")
     focused = query("activeworkspace").get("id")
     names = {old: (str(new_of[old]) if old not in workspaces or plain_name(workspaces[old])
-                   else workspaces[old]["name"]) for old in order}
+                   else workspaces[old]["name"]) for old in existing}
     expected = {}   # window address → the desk number it must end up on
     for c in windows:
         n = c["workspace"]["id"]
@@ -355,7 +411,7 @@ def main():
     set_autoreload_paused(True)
     try:
         # Machine config first: if a hook refuses, nothing on screen has changed.
-        run_hooks(moves, deletes)
+        run_hooks(moves, deletes, adds)
         config_rewritten[0] = bool(hook_scripts())
         renumber_pins(moves, deletes)
         renumber_auto_index(new_of, moves, deletes)
@@ -393,9 +449,10 @@ def main():
                 unsettle_focus(moves[standing], names[standing], 2)
             reload(errors_before)
 
-        for old in order:
+        for old in existing:
             dispatch(f'hl.dsp.workspace.rename({{ workspace = "{new_of[old]}", '
                      f'name = {lua_string(names[old])} }})')
+        make_desks(adds, workspaces.get(existing[0], {}).get("monitor"))
         # The wallpaper engine repaints on a desk SWITCH, and the pins moved under the desk on
         # screen — its picture was the right one, but a desk that was focused for a deleted one
         # was painted from its old number mid-pass. One repaint from where things now stand.
@@ -410,6 +467,10 @@ def main():
             if address in live and live[address] != want]
     if lost:
         raise Failure("windows on the wrong desk: " + "; ".join(lost))
+    alive = {w["id"] for w in query("workspaces")}
+    missing = sorted(n for n in adds if n not in alive)
+    if missing:
+        raise Failure(f"the new desk {missing[0]} was not made")
     log("done")
 
 
