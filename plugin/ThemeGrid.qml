@@ -520,6 +520,21 @@ Item {
     }
   }
 
+  // A × over the grid's top-right corner, where a close is looked for (Dave, 2026-09-26: "Please
+  // add little x icon in the top right of barbarian's theme manager"): the panel's own × glyph and
+  // hover. Close in the footer, Esc and a click on the backdrop still close the grid as well.
+  PanelActionButton {
+    anchors.right: content.right
+    anchors.bottom: content.top
+    anchors.bottomMargin: Style.space(8)
+    iconText: ""
+    tooltipText: "Close (Esc)"
+    foreground: Color.foreground
+    hoverColor: Color.accent
+    fontFamily: Style.font.family
+    onClicked: view.closeRequested()
+  }
+
   ConfirmDialog {
     id: confirm
     anchors.fill: parent
