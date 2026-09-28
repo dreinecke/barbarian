@@ -1,46 +1,45 @@
 #!/usr/bin/env bash
-# plugin-uninstall <plugin-id> — Barbarian's plugin uninstaller (2026-09-28, Dave: "right click
+# plugin-uninstall <plugin-id>... — Barbarian's plugin uninstaller (2026-09-28, Dave: "right click
 # on an item and if it is an installed plugin, be able to select Uninstall").
 #
-# Moves the plugin's folder from ~/.config/omarchy/plugins to the trash (gio trash — the theme
-# grid's rule: destructive things stay reversible) and restarts the shell. The panel calls this
-# DETACHED, once per uninstalled plugin, as it closes: bar-arrange-apply has already taken the
-# widget's entry out of shell.json and the hidden sidecar (its DEL:<id> directive), so this
-# script never touches either file — it only clears the folder itself.
+# Takes the named plugins' folders out of ~/.config/omarchy/plugins by moving them to the trash
+# (gio trash — the theme grid's rule: destructive things stay reversible), ONE AT A TIME. The
+# panel calls this DETACHED, ONCE for the whole batch, as it closes: bar-arrange-apply has
+# already taken the widgets' entries out of shell.json and the hidden sidecar (its DEL:<id>
+# directives), so this script never touches either file — it only clears the folders.
 #
-# ⚠️ THE THREE RELOADS ARE SPACED, NEVER OVERLAPPED. The layout write rebuilds the bar, the
-#    trash rebuilds the shell's whole QML root, and the restart builds it again — and fired
-#    inside the same second they CRASHED the shell (2026-09-28, crash jkm78li2mt: Quickshell's
-#    IpcHandler::onPostReload dynamic_cast mid-construction; a Quickshell bug in the
-#    delete-a-plugin path, but ours to step around). So the folder is only trashed once the id
-#    has LEFT both layout files (the apply pass's write, waited for below — an id that never
-#    leaves means that pass failed, and the folder is kept), and every stage settles
-#    BARBARIAN_UNINSTALL_SETTLE seconds (2) before the next begins.
+# ⚠️ ONE PROCESS FOR THE WHOLE BATCH, NEVER ONE PER PLUGIN. Four parallel copies once trashed
+#    four folders in the same second and each restarted the shell, and the four concurrent
+#    omarchy-restart-shell loops left FOUR live shells on the bar (2026-09-28). The batch runs
+#    as one: the folders go one after another, each settling BARBARIAN_UNINSTALL_SETTLE
+#    seconds (2) before the next, because every trash rebuilds the shell's whole QML root.
+#
+# ⚠️ AND THIS SCRIPT NEVER RESTARTS THE SHELL. A restart racing the trash's reload crashed
+#    Quickshell outright once (IpcHandler::onPostReload mid-construction, crash jkm78li2mt) —
+#    the reload takes longer than any settle, so they will always be able to overlap. Instead
+#    it leaves the restart-owed stamp that install.sh honours on its next run (a commit, a run
+#    by hand, the machine's self-heal): that path is busy-checked, alone and battle-tested.
+#    The shell's own per-plugin reload ("Local plugin changed, reloading") already discards
+#    the deleted plugin's code; the stamp is for the compiled-cached remainder.
 #
 # ⚠️ A WRITE UNDER ~/.config/omarchy/plugins RELOADS THE WHOLE SHELL, lock screen included
 #    (see install_plugin_file in this repo's install.sh) — and a reload while the session is
 #    LOCKED aborts the shell. The panel cannot be clicked while locked, but a lock can race
-#    the click, so the script refuses then: the folder stays, the entry is already gone, and
-#    the notification says to try again.
-#
-# ⚠️ A TRASH IS NOT A RESTART: the shell goes on running the plugin it compiled (install.sh's
-#    rule), so the pass ends with omarchy-restart-shell. That command refuses on its own while
-#    locked; in that case the restart-owed stamp is left for install.sh's next run (a commit,
-#    a run by hand, the machine's self-heal) to honour.
+#    the click, so the script refuses then: the folders stay, the entries are already gone,
+#    and the notification says to try again.
 #
 # A desk renumber may be running from the same panel close (desks changed too): it spends a few
-# seconds with the desks parked at spare ids between two config reloads, and a shell restart
-# inside that window breaks the pass — the same reason install.sh holds off. It is waited out
-# first; a minute is many times the pass's length.
+# seconds with the desks parked at spare ids between two config reloads, and a reload inside
+# that window breaks the pass — the same reason install.sh holds off. It is waited out first;
+# a minute is many times the pass's length.
 #
-# BARBARIAN_UNINSTALL_WAIT (10) seconds to wait for the id to leave the layout files;
-# BARBARIAN_UNINSTALL_SETTLE (2) seconds of quiet between the reloads;
-# BARBARIAN_UNINSTALL_NO_RESTART=1 skips the restart and the stamp (the tests' throwaway homes,
-# which must never restart the real shell).
+# BARBARIAN_UNINSTALL_WAIT (10) seconds to wait for the ids to leave the layout files;
+# BARBARIAN_UNINSTALL_SETTLE (2) seconds of quiet between the trashes.
 #
 # Refuses: no id, an id with a slash, a folder that is not an installed plugin (no manifest),
-# and tinkerbell.arrange itself — the panel never lists itself, and this script lives inside
-# the folder it would be trashing.
+# any id still named by the layout after the wait, and tinkerbell.arrange itself — the panel
+# never lists itself, and this script lives inside the folder it would be trashing. A batch
+# with one bad id is refused whole: folders only start leaving once every id checks out.
 set -u
 
 export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
@@ -78,23 +77,31 @@ renumbering() {
   pgrep -u "$(id -u)" -f '[b]in/ws-renumber' >/dev/null 2>&1
 }
 
-# The id still sitting in either layout file — as a quoted JSON string, which an id never is
-# anywhere else in them. A missing file is simply a clean one.
-listed_in_bar() {
-  grep -qF -- "\"$plugin_id\"" "$HOME/.config/omarchy/shell.json" 2>/dev/null \
-    || grep -qF -- "\"$plugin_id\"" "$HOME/.config/omarchy/bar-hidden.json" 2>/dev/null
+# Any of the batch's ids still sitting in either layout file — as a quoted JSON string, which
+# an id never is anywhere else in them. A missing file is simply a clean one.
+any_listed_in_bar() {
+  local id file
+  for id in "${ids[@]}"; do
+    for file in "$HOME/.config/omarchy/shell.json" "$HOME/.config/omarchy/bar-hidden.json"; do
+      grep -qF -- "\"$id\"" "$file" 2>/dev/null && return 0
+    done
+  done
+  return 1
 }
 
-plugin_id="${1:-}"
-case "$plugin_id" in
-  ""|*/*|.|..)
-    echo "plugin-uninstall: name a plugin by its id" >&2; exit 1 ;;
-  "$SELF_ID")
-    echo "plugin-uninstall: Barbarian cannot uninstall itself" >&2; exit 1 ;;
-esac
-plugin_dir="$HOME/.config/omarchy/plugins/$plugin_id"
-[ -f "$plugin_dir/manifest.json" ] || {
-  echo "plugin-uninstall: '$plugin_id' is not an installed plugin" >&2; exit 1; }
+ids=()
+for arg in "$@"; do
+  case "$arg" in
+    */|*/*|.|..)
+      echo "plugin-uninstall: name plugins by id, not '$arg'" >&2; exit 1 ;;
+    "$SELF_ID")
+      echo "plugin-uninstall: Barbarian cannot uninstall itself" >&2; exit 1 ;;
+  esac
+  [ -f "$HOME/.config/omarchy/plugins/$arg/manifest.json" ] || {
+    echo "plugin-uninstall: '$arg' is not an installed plugin" >&2; exit 1; }
+  ids+=("$arg")
+done
+[ "${#ids[@]}" -gt 0 ] || { echo "plugin-uninstall: name a plugin by its id" >&2; exit 1; }
 
 waited=0
 while renumbering && [ "$waited" -lt 60 ]; do
@@ -103,39 +110,48 @@ while renumbering && [ "$waited" -lt 60 ]; do
 done
 
 if session_locked; then
-  notify "Uninstall held back" "$plugin_id is still installed — the screen locked. Try again from the panel."
+  notify "Uninstall held back" "The screen locked — the plugins are still installed. Try again from the panel."
   echo "plugin-uninstall: the screen is locked; nothing was touched" >&2
   exit 1
 fi
 
-# The apply pass removes the entry from both files; only when that has landed does the folder
+# The apply pass removes every entry from both files; only when that has landed do the folders
 # go, so the shell never reloads against a layout that still names a plugin that is gone.
 waited=0
-while listed_in_bar && [ "$waited" -lt "$ENTRY_WAIT" ]; do
+while any_listed_in_bar && [ "$waited" -lt "$ENTRY_WAIT" ]; do
   sleep 0.2
   waited=$((waited + 1))
 done
-if listed_in_bar; then
-  notify "Uninstall held back" "$plugin_id is still on the bar — the layout write did not land. Its folder is kept."
-  echo "plugin-uninstall: '$plugin_id' is still in the bar layout; nothing was touched" >&2
+if any_listed_in_bar; then
+  notify "Uninstall held back" "The layout write did not land — the plugins' folders are kept."
+  echo "plugin-uninstall: a plugin is still in the bar layout; nothing was touched" >&2
   exit 1
 fi
-# Quiet before the trash: the bar rebuild from the layout write finishes first.
 sleep "$SETTLE"
 
-gio trash -- "$plugin_dir" 2>/dev/null || {
-  echo "plugin-uninstall: could not move $plugin_id to the trash" >&2; exit 1; }
-notify "Plugin uninstalled" "$plugin_id is in the trash, if you want it back."
+trashed=()
+for id in "${ids[@]}"; do
+  gio trash -- "$HOME/.config/omarchy/plugins/$id" 2>/dev/null || {
+    echo "plugin-uninstall: could not move $id to the trash" >&2
+    [ "${#trashed[@]}" -gt 0 ] \
+      && notify "Plugin uninstalled" "${trashed[*]} are in the trash, if you want them back."
+    exit 1
+  }
+  trashed+=("$id")
+  # Every trash rebuilds the shell's QML root; the next folder waits for that to finish.
+  sleep "$SETTLE"
+done
 
-# Quiet before the restart: the root reload the trash triggers completes first — the overlap
-# is what crashed the shell once (see the header).
-sleep "$SETTLE"
-
-[ "${BARBARIAN_UNINSTALL_NO_RESTART:-}" = "1" ] && exit 0
-# Nothing running is nothing to restart: the next shell to start reads the folder as it is.
-pgrep -u "$(id -u)" -x quickshell >/dev/null 2>&1 || exit 0
-if omarchy-restart-shell >/dev/null 2>&1; then
-  exit 0
+if [ "${#ids[@]}" -eq 1 ]; then
+  notify "Plugin uninstalled" "${ids[0]} is in the trash, if you want it back."
+else
+  notify "Plugin uninstalled" "${ids[*]} are in the trash, if you want them back."
 fi
-mkdir -p "$(dirname "$RESTART_STAMP")"
-: > "$RESTART_STAMP"
+
+# The restart is owed, not done here (see the header): install.sh's next run does it, alone
+# and busy-checked. Nothing running means nothing to restart — the next shell to start reads
+# the folder as it is.
+if pgrep -u "$(id -u)" -x quickshell >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$RESTART_STAMP")"
+  : > "$RESTART_STAMP"
+fi

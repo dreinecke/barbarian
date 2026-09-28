@@ -85,6 +85,18 @@ class Uninstall(unittest.TestCase):
         self.run_script("some.plug")
         self.assertTrue((self.plugins / "other.plug" / "manifest.json").exists())
 
+    def test_a_batch_trashes_every_folder_in_one_pass(self):
+        """One process for the whole batch — one per plugin once left four bars (see header)."""
+        result = self.run_script("some.plug", "other.plug")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.plugins / "some.plug").exists())
+        self.assertFalse((self.plugins / "other.plug").exists())
+
+    def test_a_batch_with_one_bad_id_trashes_nothing(self):
+        result = self.run_script("some.plug", "nobody.here")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.plugins / "some.plug" / "manifest.json").exists())
+
     def test_the_folder_waits_for_the_entry_to_leave_the_bar(self):
         """The trash must not land while the layout still names the plugin (see the header)."""
         (self.home / ".config/omarchy/shell.json").write_text(
@@ -93,7 +105,6 @@ class Uninstall(unittest.TestCase):
         result = self.run_script("some.plug", BARBARIAN_UNINSTALL_WAIT="0")
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((self.plugins / "some.plug" / "manifest.json").exists())
-        self.assertNotIn("omarchy-restart-shell", self.calls.read_text())
 
     def test_the_folder_leaves_once_the_layout_no_longer_names_it(self):
         (self.home / ".config/omarchy/shell.json").write_text(
@@ -103,20 +114,17 @@ class Uninstall(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse((self.plugins / "some.plug").exists())
 
-    def test_uninstall_restarts_the_shell_by_default(self):
+    def test_uninstall_never_restarts_the_shell_itself(self):
+        """The restart rides with install.sh's next run — never from the uninstaller."""
         self.run_script("some.plug")
-        self.assertIn("omarchy-restart-shell", self.calls.read_text())
-
-    def test_uninstall_can_skip_the_restart(self):
-        self.run_script("some.plug", BARBARIAN_UNINSTALL_NO_RESTART="1")
         self.assertNotIn("omarchy-restart-shell", self.calls.read_text())
-        self.assertFalse((self.home / ".local/state/omarchy/barbarian-restart-owed").exists())
-
-    def test_a_refused_restart_leaves_the_stamp_install_sh_owes(self):
-        self.stub("omarchy-restart-shell", "exit 1")
-        result = self.run_script("some.plug")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue((self.home / ".local/state/omarchy/barbarian-restart-owed").exists())
+
+    def test_no_restart_stamp_when_no_shell_is_running(self):
+        self.stub("pgrep", "exit 1")
+        self.run_script("some.plug")
+        self.assertFalse((self.home / ".local/state/omarchy/barbarian-restart-owed").exists())
+        self.assertFalse((self.plugins / "some.plug").exists())
 
     def test_the_screen_being_locked_touches_nothing(self):
         self.stub("omarchy-shell", 'if [ "$1" = "lock" ]; then echo \'{"sessionLocked":true}\'; fi')

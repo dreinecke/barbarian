@@ -19,7 +19,8 @@ moves, hides or shows it
 `~/.config/omarchy/plugins` — also offers **Uninstall**: it asks first, stages the tile's
 departure like every other change (`Ctrl+Z` undoes it, Escape forgets it), and on apply the
 entry leaves `shell.json` while `plugin/bin/plugin-uninstall` puts the plugin's folder in the
-trash and restarts the shell. A widget parked off the bar wears the theme's urgent colour,
+trash — one folder at a time, with the shell's restart riding along on the installer's next
+run. A widget parked off the bar wears the theme's urgent colour,
 and hiding one sends it to its lane's far end so the hidden ones sit together. Click a desk chip to go there; right-click it for background,
 rename, save, restore, move and delete; drag it along its row to reorder the desks. The keys
 follow the layout — `h`/`l` walk a row, `j`/`k` hop rows (the desks' row included), `H`/`L`
@@ -118,11 +119,12 @@ keeps in line.
   Its `bin/` scripts drive the per-desk wallpaper picker: pin any image (or a solid
   colour) to a desk, add images from Pictures/Downloads, remove ones you added, and
   hide the theme's own (listed per theme in `workspace-backgrounds/<theme>/hidden-images`).
-  `bin/plugin-uninstall` is the folder half of an uninstall: once the entry has left
-  `shell.json`, it trashes the plugin, settles, and restarts the shell — each reload spaced
-  from the next, because firing them together crashed the shell once. It waits out any desk
-  renumber and refuses while the screen is locked (a write under `plugins/` reloads the whole
-  shell — see `install.sh`).
+  `bin/plugin-uninstall` is the folder half of an uninstall: once the entries have left
+  `shell.json`, it trashes the plugins one at a time, each settle apart, and never restarts
+  the shell itself — a restart racing the reload crashed the shell once, four racing left
+  four bars, so the restart rides with the installer's next run instead. It waits out any
+  desk renumber and refuses while the screen is locked (a write under `plugins/` reloads
+  the whole shell — see `install.sh`).
 - **`engine/per-workspace-wallpaper.sh`** — the wallpaper watcher that applies those
   pins on every workspace switch and theme change. The panel's scripts call it after
   each pick; on the author's machine a user service keeps it running.

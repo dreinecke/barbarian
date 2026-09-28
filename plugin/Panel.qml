@@ -72,10 +72,10 @@ import "." as Reordering
 // foot, behind the "are you sure" the desk delete uses. Staged like every bar change: the
 // tile leaves at once, Ctrl+Z puts it back, Escape forgets it, and applying is what drops the
 // entry from shell.json AND the hidden sidecar (bar-arrange-apply's DEL:<id>) and runs
-// bin/plugin-uninstall detached, which waits for that write, spaces the shell's reloads
-// apart (an overlap crashed it once — see that script's header), trashes the folder and
-// restarts the shell. A plugins write reloads the whole shell and is only safe unlocked,
-// which the script checks itself.
+// bin/plugin-uninstall detached — one process for the whole batch, one folder at a time,
+// never restarting the shell itself but leaving the restart owed to install.sh's next run
+// (a restart racing the reload crashed the shell once, four racing left four bars — see
+// that script's header). It also waits out any desk renumber and refuses while locked.
 //
 // The widget itself draws NOTHING on the bar (zero width) — it exists so the shell loads
 // this panel and gives it an IPC target. HYPER+B toggles it (bindings.lua).
@@ -1295,14 +1295,15 @@ Panel {
     for (var ui = 0; ui < uninstalls.length; ui++) argv.push("DEL:" + uninstalls[ui])
     applyProc.command = argv
     applyProc.running = true
-    // Each uninstalled plugin's folder leaves detached, outliving the panel: the plugins
-    // write reloads the whole shell, which cannot be allowed to stop the pass half way —
-    // and plugin-uninstall itself waits for the layout write to land, spaces the shell's
-    // reloads apart (an overlap crashed it once), waits out any desk renumber and refuses
-    // while locked.
-    for (var up = 0; up < uninstalls.length; up++)
+    // The uninstalled plugins' folders leave detached as ONE process for the whole batch,
+    // outliving the panel: every trash reloads the whole shell, so the script clears them
+    // one at a time, only after the layout write above has landed, and never restarts the
+    // shell itself — it leaves the restart-owed stamp for install.sh's next run (a restart
+    // racing the reload crashed the shell once, and four racing left four bars on screen;
+    // see the script's header).
+    if (uninstalls.length > 0)
       Quickshell.execDetached(["sh", "-c", 'exec "$0" "$@" >/dev/null 2>&1',
-                               uninstallScript, uninstalls[up]])
+                               uninstallScript].concat(uninstalls))
     if (desksChanged()) renumberDesks()
   }
 
