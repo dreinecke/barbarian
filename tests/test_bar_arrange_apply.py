@@ -81,6 +81,30 @@ class Apply(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.shell.read_text(), before)
 
+    def test_uninstalling_takes_the_entry_out_of_its_lane(self):
+        """DEL:<id> is the panel's uninstall: the entry goes, everything else keeps its place."""
+        self.run_apply("R:omarchy.clock", "DEL:omarchy.power")
+        self.assertEqual(self.ids("right"), ["omarchy.clock", "tinkerbell.arrange"])
+
+    def test_uninstalling_takes_a_parked_entry_out_of_the_sidecar(self):
+        parked_only = {"bar": {"layout": {
+            "left": [{"id": "omarchy.menu"}, {"id": "omarchy.workspaces"}],
+            "center": [],
+            "right": [{"id": "omarchy.clock", "format": "ddd d MMM HH:mm"},
+                      {"id": "tinkerbell.arrange"}],
+        }}}
+        self.write(parked_only, hidden={"left": [], "center": [],
+                                        "right": [{"index": 1, "entry": {"id": "omarchy.power"}}]})
+        self.run_apply("R:omarchy.clock", "DEL:omarchy.power")
+        self.assertEqual(self.parked()["right"], [])
+        self.assertEqual(self.ids("right"), ["omarchy.clock", "tinkerbell.arrange"])
+
+    def test_uninstalling_an_unknown_id_changes_nothing(self):
+        before = self.shell.read_text()
+        result = self.run_apply("R:omarchy.clock", "DEL:nobody.here")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.shell.read_text(), before)
+
     def test_the_panel_never_drops_an_entry_it_does_not_list(self):
         """Barbarian's own widget is never listed; it must keep its place at the lane's end."""
         self.run_apply("R:omarchy.power", "R:omarchy.clock", "WS:omarchy.workspaces:left")

@@ -66,6 +66,17 @@ import "." as Reordering
 // the moment it opened; so while changes are pending the button is dimmed and says to apply or
 // cancel them first.
 //
+// UNINSTALLING since 2026-09-28 (Dave: "right click on an item and if it is an installed
+// plugin, be able to select 'Uninstall'"): a tile whose widget is an installed plugin — a
+// folder with a manifest under ~/.config/omarchy/plugins — offers Uninstall at its menu's
+// foot, behind the "are you sure" the desk delete uses. Staged like every bar change: the
+// tile leaves at once, Ctrl+Z puts it back, Escape forgets it, and applying is what drops the
+// entry from shell.json AND the hidden sidecar (bar-arrange-apply's DEL:<id>) and runs
+// bin/plugin-uninstall detached, which waits for that write, spaces the shell's reloads
+// apart (an overlap crashed it once — see that script's header), trashes the folder and
+// restarts the shell. A plugins write reloads the whole shell and is only safe unlocked,
+// which the script checks itself.
+//
 // The widget itself draws NOTHING on the bar (zero width) — it exists so the shell loads
 // this panel and gives it an IPC target. HYPER+B toggles it (bindings.lua).
 Panel {
@@ -88,6 +99,8 @@ Panel {
     Qt.resolvedUrl("bin/ws-renumber").toString().replace(/^file:\/\//, "")
   readonly property string stashScript:
     Qt.resolvedUrl("bin/barbarian-stash").toString().replace(/^file:\/\//, "")
+  readonly property string uninstallScript:
+    Qt.resolvedUrl("bin/plugin-uninstall").toString().replace(/^file:\/\//, "")
   readonly property string snapDir: Quickshell.env("HOME") + "/.config/omarchy/workspace-layout/snapshots"
   // Dave's own background images live under here (ws-bg-add copies into it); the × trashes
   // these, and only hides a theme's shipped images, which are not his to delete.
@@ -161,9 +174,15 @@ Panel {
   property string bgPickingName: ""
   property string bgPickingPin: ""
   property var bgThemeList: []
+  // Which widgets on the bar are installed plugins — the ids with a manifest under
+  // ~/.config/omarchy/plugins, read afresh on every open. Those tiles alone get Uninstall.
+  property var pluginIds: ({})
   // How many spacers were deleted this session — the apply script drops that many
   // unnamed spacer entries (the only widget it may delete, mirroring the minting).
   property int spacerDeletes: 0
+  // Plugins staged for uninstall this session, by id — the apply script takes their
+  // entries out (DEL:<id>) and bin/plugin-uninstall trashes their folders.
+  property var uninstalls: []
   // Solid-colour choices for the picker: black plus the current theme's palette.
   property var bgSolids: []
 
@@ -204,6 +223,8 @@ Panel {
   property bool confirmOpen: false
   property string confirmMessage: ""
   property var confirmAction: null
+  // The card's confirm button — "Delete" for a desk, "Uninstall" for a plugin.
+  property string confirmVerb: "Delete"
 
   // The hero's subtitle: one bar pun per opening, cycling through the lot. The pool
   // is Dave-curated (2026-09-01, a 58-strong long-list cut to these survivors).
@@ -351,12 +372,13 @@ Panel {
     var merges = {}
     for (var k in deskMerges) merges[k] = deskMerges[k]
     return { L: rowsOf(lmL), C: rowsOf(lmC), R: rowsOf(lmR), W: rowsOf(lmW), mode: mode,
-             spacerDeletes: spacerDeletes, deskMerges: merges, curLane: curLane, cursor: cursor }
+             spacerDeletes: spacerDeletes, deskMerges: merges, uninstalls: uninstalls.slice(),
+             curLane: curLane, cursor: cursor }
   }
 
   function stagedKey(state) {
     return JSON.stringify([state.L, state.C, state.R, state.W, state.mode, state.spacerDeletes,
-                           state.deskMerges])
+                           state.deskMerges, state.uninstalls])
   }
 
   function restoreStaged(state) {
@@ -371,6 +393,7 @@ Panel {
     mode = state.mode
     spacerDeletes = state.spacerDeletes
     deskMerges = state.deskMerges
+    uninstalls = state.uninstalls || []
     curLane = state.curLane
     cursor = Math.max(0, Math.min(modelFor(curLane).count - 1, state.cursor))
     dirty = true
@@ -472,12 +495,13 @@ Panel {
 
   // ── the "are you sure" card ─────────────────────────────────────────────────────
 
-  function openConfirm(message, action) {
+  function openConfirm(message, action, verb) {
     iconDrag.reset()
     deskDrag.reset()
     tileMenu.close()
     confirmMessage = message
     confirmAction = action
+    confirmVerb = verb || "Delete"
     // Cancel is the default: Enter straight after opening changes nothing.
     confirmDialog.selectedIndex = 0
     confirmOpen = true
@@ -532,7 +556,8 @@ Panel {
     else keyCatcher.forceActiveFocus(Qt.OtherFocusReason)
   })
 
-  // A tile's menu: the eye's hide/show and, for a spacer, the x's delete.
+  // A tile's menu: the eye's hide/show, for a spacer the x's delete — and, for an
+  // installed plugin, its Uninstall (see requestUninstall below).
   function openTileMenu(lane, i, slotItem) {
     if (iconDrag.active) return
     iconDrag.reset()
@@ -555,6 +580,11 @@ Panel {
     if (r.wid === "omarchy.spacer")
       choices.push({ glyph: iconX, label: "Delete", enabled: true,
                      act: function() { removeSpacer(lane, i) } })
+    // An installed plugin (a manifest under the plugins dir) can be uninstalled outright —
+    // last in the menu, like the desk delete, and behind the same "are you sure".
+    if (pluginIds[r.wid] === true)
+      choices.push({ glyph: iconTrash, label: "Uninstall", enabled: true,
+                     act: function() { requestUninstall(lane, i) } })
     openMenu(r.label, choices, slotItem)
   }
 
@@ -682,6 +712,33 @@ Panel {
       spacerDeletes++
       if (curLane === lane) cursor = Math.max(0, Math.min(m.count - 1, cursor))
     })
+  }
+
+  // Uninstalling an installed plugin (Dave, 2026-09-28). Asks first, like a desk delete;
+  // the tile leaves at once, but the folder is only trashed when the panel applies —
+  // until then Ctrl+Z puts the tile back, and Escape forgets the whole thing.
+  function requestUninstall(lane, i) {
+    var m = modelFor(lane)
+    if (lane === "W" || i < 0 || i >= m.count) return
+    var r = m.get(i)
+    if (pluginIds[r.wid] !== true) return
+    openConfirm("Uninstall " + r.label + "? It leaves the bar, and its folder goes to the trash.",
+      function() { uninstallPlugin(lane, i) }, "Uninstall")
+  }
+
+  function uninstallPlugin(lane, i) {
+    var m = modelFor(lane)
+    if (lane === "W" || i < 0 || i >= m.count) return
+    var r = m.get(i)
+    if (pluginIds[r.wid] !== true || uninstalls.indexOf(r.wid) >= 0) return
+    var label = r.label, wid = r.wid
+    change("Uninstall " + label, function() {
+      m.remove(i)
+      uninstalls = uninstalls.concat([wid])
+      if (curLane === lane) cursor = Math.max(0, Math.min(m.count - 1, cursor))
+    })
+    keyCatcher.Accessible.announce(label + " leaves when you apply. Control Z undoes it.",
+                                   Accessible.Polite)
   }
 
   function drainLane(from, into) {
@@ -1087,6 +1144,7 @@ Panel {
       var tail4b = String(tail4[1] || "").split("---COLORS---")
       var tail5 = String(tail4b[1] || "").split("---PINS---")
       var tail6 = String(tail5[1] || "").split("---HOOK---")
+      var tail7 = String(tail6[1] || "").split("---PLUGINS---")
       canRename = String(tail4[0] || "").trim() !== ""
       var bgs = [], bl = String(tail4b[0] || "").split("\n")
       for (var bi = 0; bi < bl.length; bi++)
@@ -1115,8 +1173,17 @@ Panel {
         var pm = pl[pi].match(/\/ws(\d+)\.[A-Za-z]+\|(.+)$/)
         if (pm) pins[parseInt(pm[1], 10)] = pm[2].trim()
       }
+      // Installed plugins: the ids with a manifest under ~/.config/omarchy/plugins, one
+      // per line from the read pass — those tiles alone are offered an Uninstall.
+      var installed = {}
+      var il = String(tail7[1] || "").split("\n")
+      for (var ii = 0; ii < il.length; ii++) {
+        var pid = il[ii].trim()
+        if (pid !== "") installed[pid] = true
+      }
+      pluginIds = installed
       fillWorkspaces(tail[0] || "[]", tail2[0] || "{}", tail3[0] || "", pins,
-                     String(tail6[1] || "").trim() !== "")
+                     String(tail7[0] || "").trim() !== "")
     } catch (e) {
       loadError = "Could not read the bar layout file."
     }
@@ -1124,6 +1191,7 @@ Panel {
     bgPicking = -1
     tileMenu.close()
     spacerDeletes = 0
+    uninstalls = []
     undoStack = []
     redoStack = []
     var lanes = laneOrder()
@@ -1224,8 +1292,17 @@ Panel {
       argv.push("WS:" + wsWidgetId + ":"
         + (mode === "1" ? "left" : mode === "2" ? "center" : "right"))
     for (i = 0; i < spacerDeletes; i++) argv.push("DEL:omarchy.spacer")
+    for (var ui = 0; ui < uninstalls.length; ui++) argv.push("DEL:" + uninstalls[ui])
     applyProc.command = argv
     applyProc.running = true
+    // Each uninstalled plugin's folder leaves detached, outliving the panel: the plugins
+    // write reloads the whole shell, which cannot be allowed to stop the pass half way —
+    // and plugin-uninstall itself waits for the layout write to land, spaces the shell's
+    // reloads apart (an overlap crashed it once), waits out any desk renumber and refuses
+    // while locked.
+    for (var up = 0; up < uninstalls.length; up++)
+      Quickshell.execDetached(["sh", "-c", 'exec "$0" "$@" >/dev/null 2>&1',
+                               uninstallScript, uninstalls[up]])
     if (desksChanged()) renumberDesks()
   }
 
@@ -1274,7 +1351,8 @@ Panel {
         "echo ---BGS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; d=\"$(readlink -f \"$HOME/.local/state/omarchy/current/theme\")/backgrounds\"; h=\"$HOME/.config/omarchy/workspace-backgrounds/$tn/hidden-images\"; { find -L \"$HOME/.config/omarchy/backgrounds/$tn\" -maxdepth 1 -type f; find -L \"$d\" -maxdepth 1 -type f | awk -F/ -v h=\"$h\" 'BEGIN { while ((getline name < h) > 0) hidden[name] } !($NF in hidden)'; } 2>/dev/null | sort; " +
         "echo ---COLORS---; cat \"$HOME/.local/state/omarchy/current/theme/colors.toml\" 2>/dev/null; " +
         "echo ---PINS---; tn=\"$(cat \"$HOME/.local/state/omarchy/current/theme.name\" 2>/dev/null)\"; for f in \"$HOME/.config/omarchy/workspace-backgrounds/$tn\"/ws*.*; do [ -e \"$f\" ] && echo \"$f|$(readlink -f \"$f\")\"; done; " +
-        "echo ---HOOK---; ls -A \"$HOME/.config/omarchy/hooks/workspaces-renumbered\" \"$HOME/.config/omarchy/hooks/workspaces-renumbered.d\" 2>/dev/null; true"]
+        "echo ---HOOK---; ls -A \"$HOME/.config/omarchy/hooks/workspaces-renumbered\" \"$HOME/.config/omarchy/hooks/workspaces-renumbered.d\" 2>/dev/null; " +
+        "echo ---PLUGINS---; for d in \"$HOME/.config/omarchy/plugins\"/*/; do [ -f \"$d/manifest.json\" ] && basename \"$d\"; done; true"]
       readProc.running = true
     } else if (dirty && !cancelled) {
       apply()
@@ -3197,7 +3275,7 @@ Panel {
         opened: root.confirmOpen
         message: root.confirmMessage
         cancelText: "Cancel"
-        confirmText: "Delete"
+        confirmText: root.confirmVerb
         foreground: root.foreground
         selectedText: root.accent
         fontFamily: root.fontFamily

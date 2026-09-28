@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# plugin-uninstall <plugin-id> — Barbarian's plugin uninstaller (2026-09-28, Dave: "right click
+# on an item and if it is an installed plugin, be able to select Uninstall").
+#
+# Moves the plugin's folder from ~/.config/omarchy/plugins to the trash (gio trash — the theme
+# grid's rule: destructive things stay reversible) and restarts the shell. The panel calls this
+# DETACHED, once per uninstalled plugin, as it closes: bar-arrange-apply has already taken the
+# widget's entry out of shell.json and the hidden sidecar (its DEL:<id> directive), so this
+# script never touches either file — it only clears the folder itself.
+#
+# ⚠️ THE THREE RELOADS ARE SPACED, NEVER OVERLAPPED. The layout write rebuilds the bar, the
+#    trash rebuilds the shell's whole QML root, and the restart builds it again — and fired
+#    inside the same second they CRASHED the shell (2026-09-28, crash jkm78li2mt: Quickshell's
+#    IpcHandler::onPostReload dynamic_cast mid-construction; a Quickshell bug in the
+#    delete-a-plugin path, but ours to step around). So the folder is only trashed once the id
+#    has LEFT both layout files (the apply pass's write, waited for below — an id that never
+#    leaves means that pass failed, and the folder is kept), and every stage settles
+#    BARBARIAN_UNINSTALL_SETTLE seconds (2) before the next begins.
+#
+# ⚠️ A WRITE UNDER ~/.config/omarchy/plugins RELOADS THE WHOLE SHELL, lock screen included
+#    (see install_plugin_file in this repo's install.sh) — and a reload while the session is
+#    LOCKED aborts the shell. The panel cannot be clicked while locked, but a lock can race
+#    the click, so the script refuses then: the folder stays, the entry is already gone, and
+#    the notification says to try again.
+#
+# ⚠️ A TRASH IS NOT A RESTART: the shell goes on running the plugin it compiled (install.sh's
+#    rule), so the pass ends with omarchy-restart-shell. That command refuses on its own while
+#    locked; in that case the restart-owed stamp is left for install.sh's next run (a commit,
+#    a run by hand, the machine's self-heal) to honour.
+#
+# A desk renumber may be running from the same panel close (desks changed too): it spends a few
+# seconds with the desks parked at spare ids between two config reloads, and a shell restart
+# inside that window breaks the pass — the same reason install.sh holds off. It is waited out
+# first; a minute is many times the pass's length.
+#
+# BARBARIAN_UNINSTALL_WAIT (10) seconds to wait for the id to leave the layout files;
+# BARBARIAN_UNINSTALL_SETTLE (2) seconds of quiet between the reloads;
+# BARBARIAN_UNINSTALL_NO_RESTART=1 skips the restart and the stamp (the tests' throwaway homes,
+# which must never restart the real shell).
+#
+# Refuses: no id, an id with a slash, a folder that is not an installed plugin (no manifest),
+# and tinkerbell.arrange itself — the panel never lists itself, and this script lives inside
+# the folder it would be trashing.
+set -u
+
+export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+export PATH="$OMARCHY_PATH/bin:$PATH"
+
+# A plain ssh login has no WAYLAND_DISPLAY, and without it the lock cannot be read (install.sh,
+# 2026-09-20). A default, not an override: a real session's value is left alone.
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  for sock in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/wayland-[0-9]*; do
+    [ -S "$sock" ] && export WAYLAND_DISPLAY="$(basename "$sock")" && break
+  done
+fi
+
+RESTART_STAMP="$HOME/.local/state/omarchy/barbarian-restart-owed"
+SELF_ID="tinkerbell.arrange"
+ENTRY_WAIT="${BARBARIAN_UNINSTALL_WAIT:-10}"
+SETTLE="${BARBARIAN_UNINSTALL_SETTLE:-2}"
+
+notify() { omarchy-notification-send "$1" "$2" >/dev/null 2>&1 || true; }
+
+# install.sh's reading, in three lines fewer: no shell running means nothing to crash.
+session_locked() {
+  pgrep -u "$(id -u)" -x quickshell >/dev/null 2>&1 || return 1
+  local status
+  status="$(omarchy-shell lock status 2>/dev/null)"
+  case "$status" in
+    *'"sessionLocked":true'*)  return 0 ;;
+    *'"pending":true'*)        return 0 ;;
+    *'"sessionLocked":false'*) return 1 ;;
+  esac
+  [ "$(omarchy-shell lock isLocked 2>/dev/null)" != "false" ]
+}
+
+renumbering() {
+  pgrep -u "$(id -u)" -f '[b]in/ws-renumber' >/dev/null 2>&1
+}
+
+# The id still sitting in either layout file — as a quoted JSON string, which an id never is
+# anywhere else in them. A missing file is simply a clean one.
+listed_in_bar() {
+  grep -qF -- "\"$plugin_id\"" "$HOME/.config/omarchy/shell.json" 2>/dev/null \
+    || grep -qF -- "\"$plugin_id\"" "$HOME/.config/omarchy/bar-hidden.json" 2>/dev/null
+}
+
+plugin_id="${1:-}"
+case "$plugin_id" in
+  ""|*/*|.|..)
+    echo "plugin-uninstall: name a plugin by its id" >&2; exit 1 ;;
+  "$SELF_ID")
+    echo "plugin-uninstall: Barbarian cannot uninstall itself" >&2; exit 1 ;;
+esac
+plugin_dir="$HOME/.config/omarchy/plugins/$plugin_id"
+[ -f "$plugin_dir/manifest.json" ] || {
+  echo "plugin-uninstall: '$plugin_id' is not an installed plugin" >&2; exit 1; }
+
+waited=0
+while renumbering && [ "$waited" -lt 60 ]; do
+  sleep 2
+  waited=$((waited + 2))
+done
+
+if session_locked; then
+  notify "Uninstall held back" "$plugin_id is still installed — the screen locked. Try again from the panel."
+  echo "plugin-uninstall: the screen is locked; nothing was touched" >&2
+  exit 1
+fi
+
+# The apply pass removes the entry from both files; only when that has landed does the folder
+# go, so the shell never reloads against a layout that still names a plugin that is gone.
+waited=0
+while listed_in_bar && [ "$waited" -lt "$ENTRY_WAIT" ]; do
+  sleep 0.2
+  waited=$((waited + 1))
+done
+if listed_in_bar; then
+  notify "Uninstall held back" "$plugin_id is still on the bar — the layout write did not land. Its folder is kept."
+  echo "plugin-uninstall: '$plugin_id' is still in the bar layout; nothing was touched" >&2
+  exit 1
+fi
+# Quiet before the trash: the bar rebuild from the layout write finishes first.
+sleep "$SETTLE"
+
+gio trash -- "$plugin_dir" 2>/dev/null || {
+  echo "plugin-uninstall: could not move $plugin_id to the trash" >&2; exit 1; }
+notify "Plugin uninstalled" "$plugin_id is in the trash, if you want it back."
+
+# Quiet before the restart: the root reload the trash triggers completes first — the overlap
+# is what crashed the shell once (see the header).
+sleep "$SETTLE"
+
+[ "${BARBARIAN_UNINSTALL_NO_RESTART:-}" = "1" ] && exit 0
+# Nothing running is nothing to restart: the next shell to start reads the folder as it is.
+pgrep -u "$(id -u)" -x quickshell >/dev/null 2>&1 || exit 0
+if omarchy-restart-shell >/dev/null 2>&1; then
+  exit 0
+fi
+mkdir -p "$(dirname "$RESTART_STAMP")"
+: > "$RESTART_STAMP"

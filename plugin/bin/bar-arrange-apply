@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bar-arrange-apply <L|C|R>:<widget-id>[:hidden]... [WS:<id>:<left|center|right>]
+# bar-arrange-apply <L|C|R>:<widget-id>[:hidden]... [WS:<id>:<left|center|right>] [DEL:<widget-id>]...
 # Rewrite the LEFT, CENTER and RIGHT sections of ~/.config/omarchy/shell.json to the
 # given order, park ids marked :hidden in ~/.config/omarchy/bar-hidden.json, and place
 # the workspaces strip per the WS directive. Two lanes since 2026-09-01 (Dave asked for
@@ -8,6 +8,12 @@
 # its whole settings object, its lane and its position, never deleted); the CENTER lane
 # and the WS directive since the same evening (Barbarian's mode toggle: the strip goes
 # far left, centre, or far right — "off" was briefly a mode and turned out to be a typo).
+#
+# DEL:<widget-id> (since 2026-09-28) removes an entry outright, wherever it sits — a lane
+# or the sidecar — and is how a plugin's uninstall leaves the bar (bin/plugin-uninstall
+# trashes the folder itself, detached; this script stays the only writer of these files).
+# DEL:omarchy.spacer keeps the older count-based meaning: spacers are fungible, so the
+# panel sends one directive per removed spacer.
 #
 # Entries travel as whole objects, so per-widget settings (the clock's formats, the
 # strip's own config) survive a reorder, a lane change and a hide/show round-trip. Ids
@@ -30,11 +36,17 @@ if not sys.argv[1:]:
 want = []  # (lane, id, hidden)
 ws_id = ws_place = None
 del_spacers = 0
+del_ids = set()
 for arg in sys.argv[1:]:
-    if arg == "DEL:omarchy.spacer":
-        # Spacer deletion, the mirror of minting — the panel sends one per removed
-        # spacer, and the count is settled against the unnamed pool after ordering.
-        del_spacers += 1
+    if arg.startswith("DEL:"):
+        wid = arg[4:]
+        if wid == "omarchy.spacer":
+            # Spacer deletion, the mirror of minting — the panel sends one per removed
+            # spacer, and the count is settled against the unnamed pool after ordering.
+            del_spacers += 1
+        else:
+            # A plugin's uninstall: its entry leaves wherever it sits, lane or sidecar.
+            del_ids.add(wid)
         continue
     if arg.startswith("WS:"):
         _, ws_id, ws_place = arg.split(":")
@@ -129,8 +141,15 @@ for lane, wid, hid in want:
 # (the pre-hide panel, still rendering out of a stale shell) silently destroyed the
 # hidden Bluetooth entry through it.
 # Deleted spacers: consume unnamed spacer entries from the pool so the leftover
-# pass below drops them instead of preserving them.
+# pass below drops them instead of preserving them. A deleted plugin id takes its
+# every entry the same way; an id that names nothing is a caller's mistake, refused
+# like any other unknown id rather than silently ignored.
 deleted = []
+for wid in del_ids:
+    pool = pools.pop(wid, None)
+    if not pool:
+        sys.exit(f"bar-arrange-apply: '{wid}' is not in the bar or hidden list")
+    deleted.extend(pool)
 sp_pool = pools.get("omarchy.spacer") or []
 for _ in range(del_spacers):
     if sp_pool:

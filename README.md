@@ -15,7 +15,11 @@ marks a new landing position. Releasing commits the move. Escape during a drag, 
 the pointer grab, or dropping outside the icon rows cancels just that move, preserving
 earlier staged changes. Hover for the name; right-click or press `F10` for the menu that
 moves, hides or shows it
-(and deletes a spacer). A widget parked off the bar wears the theme's urgent colour,
+(and deletes a spacer). A widget that is an installed plugin — a folder with a manifest under
+`~/.config/omarchy/plugins` — also offers **Uninstall**: it asks first, stages the tile's
+departure like every other change (`Ctrl+Z` undoes it, Escape forgets it), and on apply the
+entry leaves `shell.json` while `plugin/bin/plugin-uninstall` puts the plugin's folder in the
+trash and restarts the shell. A widget parked off the bar wears the theme's urgent colour,
 and hiding one sends it to its lane's far end so the hidden ones sit together. Click a desk chip to go there; right-click it for background,
 rename, save, restore, move and delete; drag it along its row to reorder the desks. The keys
 follow the layout — `h`/`l` walk a row, `j`/`k` hop rows (the desks' row included), `H`/`L`
@@ -114,6 +118,11 @@ keeps in line.
   Its `bin/` scripts drive the per-desk wallpaper picker: pin any image (or a solid
   colour) to a desk, add images from Pictures/Downloads, remove ones you added, and
   hide the theme's own (listed per theme in `workspace-backgrounds/<theme>/hidden-images`).
+  `bin/plugin-uninstall` is the folder half of an uninstall: once the entry has left
+  `shell.json`, it trashes the plugin, settles, and restarts the shell — each reload spaced
+  from the next, because firing them together crashed the shell once. It waits out any desk
+  renumber and refuses while the screen is locked (a write under `plugins/` reloads the whole
+  shell — see `install.sh`).
 - **`engine/per-workspace-wallpaper.sh`** — the wallpaper watcher that applies those
   pins on every workspace switch and theme change. The panel's scripts call it after
   each pick; on the author's machine a user service keeps it running.

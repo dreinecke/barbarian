@@ -163,6 +163,7 @@ install_plugin_file m644 "$HERE/plugin/ThemeGrid.qml"         "$PLUGIN_DIR/Theme
 install_plugin_file m644 "$HERE/plugin/ThemeStore.qml"        "$PLUGIN_DIR/ThemeStore.qml"
 install_plugin_file m644 "$HERE/plugin/ThemeRemover.qml"      "$PLUGIN_DIR/ThemeRemover.qml"
 install_plugin_file m755 "$HERE/plugin/bin/theme-remover"     "$PLUGIN_DIR/bin/theme-remover"
+install_plugin_file m755 "$HERE/plugin/bin/plugin-uninstall"  "$PLUGIN_DIR/bin/plugin-uninstall"
 # The manifest goes in LAST: it names ThemeRemover.qml as the overlay, and a manifest that arrives
 # before the file it names leaves the shell with an overlay that fails to load. A run stopped part
 # way by the screen locking keeps the old manifest until the rest is in.
