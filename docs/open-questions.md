@@ -9,6 +9,11 @@ strings, so the merged plugin can keep a second handler answering to
 `tinkerbell.reptile` — that would leave HYPER+L, bindings.lua and both engines'
 callbacks working unchanged.
 
+Since asking: the engines move into this repo as part of the merge either way, so
+their two id references are rewritten regardless — the first option's real saving
+is only the machine-local keybind line, against a ghost identity (an IPC name with
+no plugin behind it) living on in bindings.lua forever.
+
 **How should the Reptile panel live inside the merged Barbarian plugin?**
 
 - A second panel inside Barbarian's widget, keeping its own IPC name — one folder and installer, keybind and engines untouched (cheapest)
