@@ -1,6 +1,6 @@
 # Open questions
 
-## Q-101 How should the Reptile panel live inside the merged Barbarian plugin?
+## Q-101 The Reptile panel's surface
 
 Reptile's zero-width widget exists only to host its panel and IPC target
 (`tinkerbell.reptile`, HYPER+L). Barbarian already hosts two surfaces (the arrange
@@ -9,11 +9,13 @@ strings, so the merged plugin can keep a second handler answering to
 `tinkerbell.reptile` — that would leave HYPER+L, bindings.lua and both engines'
 callbacks working unchanged.
 
+**How should the Reptile panel live inside the merged Barbarian plugin?**
+
 - A second panel inside Barbarian's widget, keeping its own IPC name — one folder and installer, keybind and engines untouched (cheapest)
 - Everything re-routed to the one id `tinkerbell.arrange` — one identity everywhere, but the keybind and every engine callback get retargeted
 - A tab inside the main Barbarian panel — one window, but Reptile loses its own header, puns and keyboard model
 
-## Q-102 Should install.sh migrate machines off the old plugin automatically?
+## Q-102 Machine migration off the old plugin
 
 After the merge, every machine still has the `tinkerbell.reptile` entry in
 shell.json (machine-local) and its folder under plugins/. The entry must leave the
@@ -21,11 +23,15 @@ bar and the folder must go; under Q-101's first answer the keybind stays as it i
 Barbarian now owns a hardened removal path (DEL: in bar-arrange-apply, then
 plugin-uninstall: layout write first, one folder at a time, never a restart).
 
+**Should install.sh migrate machines off the old plugin automatically?**
+
 - Yes — install.sh drops the entry, then detaches plugin-uninstall for the folder, and the keybind reminder is printed only if it needs changing
 - No — the merge lands inert; I take the entry, folder and (if needed) keybind out by hand on each machine
 - Half — the installer only trashes the folder; I edit shell.json by hand
 
-## Q-103 What happens to the reptile repository?
+## Q-103 The reptile repository's fate
+
+**What happens to the reptile repository?**
 
 - Archived — a closing README points at Barbarian; the file history stays there and Barbarian's README records where Reptile came from
 - Grafted — reptile's commits are subtree-merged in first, so `git log` carries the layouts panel's history too
