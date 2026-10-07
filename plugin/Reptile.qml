@@ -24,11 +24,17 @@ import qs.Ui
 //
 // The widget draws NOTHING on the bar (zero width) — it exists so the shell loads this panel
 // and gives it an IPC target. HYPER+L toggles it (bindings.lua).
+//
+// MERGED INTO BARBARIAN 2026-10-07 (Dave: "merge reptile into barbarian so it's one single
+// system"; Q-101 settled: one id everywhere): this file lives in the tinkerbell.arrange
+// plugin now, instantiated by Panel.qml, and its IPC handler rides Barbarian's target —
+// HYPER+L calls `omarchy-shell tinkerbell.arrange layouts`, and the engines call the same
+// target with laying/explain/… below. install.sh migrates the old separate plugin away.
+// Its history was grafted in (Q-103): `git log --follow plugin/Reptile.qml`.
 Panel {
   id: root
 
-  moduleName: "tinkerbell.reptile"
-  ipcTarget: "tinkerbell.reptile"
+  moduleName: "tinkerbell.arrange"
 
   readonly property string tool: "\"$HOME/.config/omarchy/workspace-layout/ws-layout\""
 
@@ -243,7 +249,7 @@ Panel {
   // to the shell's own OSD because that one cuts a message off at about twenty characters —
   // "Reptile is laying out…" was all that survived — and a volume key would replace it
   // mid-desk. Otherwise the same card: bottom centre, the popups border, the snake at display
-  // size, bold title text. `omarchy-shell tinkerbell.reptile laying "<message>"` shows it (or
+  // size, bold title text. `omarchy-shell tinkerbell.arrange laying "<message>"` shows it (or
   // re-words it), `… laid` takes it down — never before it has had a moment and a half on
   // screen, so a desk that needed nothing still shows that HYPER+R was heard — and it takes
   // itself down after three minutes in case ws-layout died with a desk half open. Since
@@ -295,15 +301,13 @@ Panel {
   Timer { id: layingGuard; interval: 180000; onTriggered: root.layingOpen = false }
   Timer { id: layingHold; onTriggered: { root.layingOpen = false; layingGuard.stop() } }
 
-  // The Panel's own IPC handler is switched off so the two extra calls can share its target.
+  // Barbarian's own Panel manages this target's open/close/toggle; this handler adds the
+  // layouts panel's calls alongside them on the same target (manageIpc: false above keeps
+  // this file's Panel root from registering a second set of its own).
   manageIpc: false
   IpcHandler {
-    target: "tinkerbell.reptile"
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): void { root.toggle() }
+    target: "tinkerbell.arrange"
+    function layouts(): void { root.toggle() }
     function laying(message: string): string { root.laying(message); return "ok" }
     function explain(message: string, reason: string): string { root.explain(message, reason); return "ok" }
     function laid(): string { root.laid(); return "ok" }
@@ -426,7 +430,7 @@ Panel {
   // start — it asks for a placeholder in that window's place rather than closing the desk over
   // the gap (Dave, 2026-09-19: "a blank/placeholder window … where the missing app would have
   // been … with the message about it … and a one click app launcher to replace the placeholder").
-  // `omarchy-shell tinkerbell.reptile placeholder '<json>'` puts one up: an ordinary window, which
+  // `omarchy-shell tinkerbell.arrange placeholder '<json>'` puts one up: an ordinary window, which
   // ws-layout places like any other. It says what is missing and why, and its actions come from
   // the engine as big tiles of equal size (Dave: "3 buttons, same size each, nice and big"). For a
   // terminal that was running a program they are Run it again, Open a new terminal (both in its
@@ -732,7 +736,7 @@ Panel {
   }
 
   // A look at a placeholder without opening one on a desk — an overlay that takes no clicks and
-  // no keys, for reviewing its design. `omarchy-shell tinkerbell.reptile placeholderPreview '<json>'`
+  // no keys, for reviewing its design. `omarchy-shell tinkerbell.arrange placeholderPreview '<json>'`
   // shows it for ten seconds.
   property var previewInfo: null
   function placeholderPreview(json) {

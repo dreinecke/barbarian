@@ -301,9 +301,10 @@ def mark_fired(name):
     except OSError:
         pass
     # And a nudge to the panel, so the tick appears while it is on screen. Fire and forget.
+    # The panel rides Barbarian's target since the merge (2026-10-07, Q-101).
     try:
         subprocess.Popen(["qs", "-p", "/usr/share/omarchy/shell", "ipc", "call",
-                          "tinkerbell.reptile", "pinged", name],
+                          "tinkerbell.arrange", "pinged", name],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass

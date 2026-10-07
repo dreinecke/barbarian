@@ -2,11 +2,22 @@
 # Barbarian — installer for the Omarchy Quickshell shell.
 #
 # Installs, user-space (no sudo), into ~/.config/omarchy:
-#   plugin/ → ~/.config/omarchy/plugins/tinkerbell.arrange/   (the HYPER+B bar-arrange panel and
-#                                                              its full-screen theme grid)
+#   plugin/ → ~/.config/omarchy/plugins/tinkerbell.arrange/   (the HYPER+B bar-arrange panel,
+#                                                              the HYPER+L layouts panel that
+#                                                              was Reptile, and the full-screen
+#                                                              theme grid)
 #   engine/per-workspace-wallpaper.sh
 #           → ~/.config/omarchy/workspace-backgrounds/        (the per-desk wallpaper watcher
 #                                                              the panel's bin/ scripts drive)
+#   engine/ws-layout, engine/quick-app
+#           → ~/.config/omarchy/workspace-layout/             (the layouts panel's engines:
+#                                                              recordings, restores, quick apps)
+#
+# MIGRATION (2026-10-07, Q-102): until this run, Reptile was its own plugin. When the old
+# tinkerbell.reptile folder is still installed, the entry is dropped from shell.json and the
+# hidden sidecar, the folder goes to the trash through plugin-uninstall (entry write first,
+# never a restart of its own — see that script's header), and a reminder is printed if the
+# machine-local keybind still targets the old id.
 #
 # Idempotent: re-running is the repair.
 #
@@ -37,6 +48,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ID="tinkerbell.arrange"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 ENGINE_DST="$HOME/.config/omarchy/workspace-backgrounds/per-workspace-wallpaper.sh"
+LAYOUT_DST="$HOME/.config/omarchy/workspace-layout"
+OLD_PLUGIN_DIR="$HOME/.config/omarchy/plugins/tinkerbell.reptile"
 WAIT_UNIT="barbarian-install-pending"
 # A plugin file written while the screen is locked cannot be compiled then: restarting Quickshell
 # would unlock the machine. This file says a restart is owed, and the next free run does it.
@@ -131,6 +144,29 @@ restart_engine() {
   done
 }
 
+# 🛑 A BROKEN ENGINE IS NEVER INSTALLED (Reptile's rule, carried over): ws-layout runs from a
+#    key press and an installer that wrote a file with a syntax error in it would take HYPER+R
+#    and HYPER+S away until someone read a log. The panels cannot be checked this way —
+#    Quickshell compiles QML itself — but a write is not a reload, so a broken panel only
+#    shows up at the next restart.
+compiles() {
+  python3 - "$1" <<'PY'
+import os, py_compile, sys, tempfile
+cache = tempfile.NamedTemporaryFile(suffix=".pyc", delete=False)
+cache.close()
+try:
+    py_compile.compile(sys.argv[1], cfile=cache.name, doraise=True)
+finally:
+    os.unlink(cache.name)
+PY
+}
+for engine in ws-layout quick-app; do
+  if ! compiles "$HERE/engine/$engine"; then
+    echo "barbarian: engine/$engine does not compile — nothing installed"
+    exit 1
+  fi
+done
+
 DEFERRED=0
 PLUGIN_CHANGED=0
 ENGINE_CHANGED=0
@@ -151,6 +187,7 @@ install_plugin_file() { # <mode> <repo file> <live file>
 install_plugin_file m644 "$HERE/plugin/ReorderController.qml" "$PLUGIN_DIR/ReorderController.qml"
 install_plugin_file m644 "$HERE/plugin/ReorderRow.qml"        "$PLUGIN_DIR/ReorderRow.qml"
 install_plugin_file m644 "$HERE/plugin/Panel.qml"             "$PLUGIN_DIR/Panel.qml"
+install_plugin_file m644 "$HERE/plugin/Reptile.qml"            "$PLUGIN_DIR/Reptile.qml"
 install_plugin_file m755 "$HERE/plugin/bin/bar-arrange-apply" "$PLUGIN_DIR/bin/bar-arrange-apply"
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-pick"        "$PLUGIN_DIR/bin/ws-bg-pick"
 install_plugin_file m755 "$HERE/plugin/bin/ws-bg-add"         "$PLUGIN_DIR/bin/ws-bg-add"
@@ -169,10 +206,76 @@ install_plugin_file m755 "$HERE/plugin/bin/plugin-uninstall"  "$PLUGIN_DIR/bin/p
 # way by the screen locking keeps the old manifest until the rest is in.
 install_plugin_file m644 "$HERE/plugin/manifest.json"         "$PLUGIN_DIR/manifest.json"
 install_plugin_file m755 "$HERE/engine/per-workspace-wallpaper.sh" "$ENGINE_DST"
+install_plugin_file m755 "$HERE/engine/ws-layout"              "$LAYOUT_DST/ws-layout"
+install_plugin_file m755 "$HERE/engine/quick-app"              "$LAYOUT_DST/quick-app"
 
 # The engine is normally started by a user service or a theme-set hook on the host
 # machine; it is safe to install everywhere and started where the wiring exists.
 [ "$ENGINE_CHANGED" = 1 ] && restart_engine
+
+# The old Reptile plugin (see the header): the entry leaves both files FIRST, then the folder —
+# the order plugin-uninstall waits for. It runs synchronously, not detached: the installer is
+# already the detached thing, and this way the trash lands before the restart below, which then
+# clears the stamp plugin-uninstall leaves. One restart, in order, once.
+if [ -d "$OLD_PLUGIN_DIR" ] && ! busy; then
+  python3 - <<'PY'
+import json, os, tempfile
+
+OLD = "tinkerbell.reptile"
+LANES = ("left", "center", "right")
+
+def rewrite(path, transform):
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        data = json.load(f)
+    if not transform(data):
+        return
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="." + os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+def clean_layout(data):
+    layout = data.get("bar", {}).get("layout", {})
+    changed = False
+    for lane in LANES:
+        rows = layout.get(lane, [])
+        kept = [e for e in rows if e.get("id") != OLD]
+        if len(kept) != len(rows):
+            layout[lane] = kept
+            changed = True
+    return changed
+
+def clean_sidecar(data):
+    changed = False
+    for lane in LANES:
+        rows = data.get(lane, [])
+        kept = [r for r in rows if (r.get("entry") or {}).get("id") != OLD]
+        if len(kept) != len(rows):
+            data[lane] = kept
+            changed = True
+    return changed
+
+home = os.path.expanduser("~")
+rewrite(home + "/.config/omarchy/shell.json", clean_layout)
+rewrite(home + "/.config/omarchy/bar-hidden.json", clean_sidecar)
+PY
+  if "$HERE/plugin/bin/plugin-uninstall" tinkerbell.reptile; then
+    echo "barbarian: Reptile merged in — the old plugin's folder went to the trash"
+  else
+    echo "barbarian: the old Reptile folder is still installed; the next run tries again"
+  fi
+  if grep -q "tinkerbell.reptile" "$HOME/.config/hypr/bindings.lua" 2>/dev/null; then
+    echo "barbarian: keybind reminder — in ~/.config/hypr/bindings.lua change"
+    echo "  omarchy-shell tinkerbell.reptile toggle  →  omarchy-shell tinkerbell.arrange layouts"
+  fi
+fi
 
 # A restart is owed when this run wrote a plugin file, or when an earlier one did and the screen
 # went up before it could be compiled.

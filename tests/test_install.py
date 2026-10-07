@@ -58,7 +58,9 @@ class Install(unittest.TestCase):
 
     def run_install(self, *args):
         env = {"HOME": str(self.home), "PATH": f"{self.bin}:{os.environ['PATH']}",
+               "OMARCHY_PATH": str(self.bin),   # the scripts prepend "$OMARCHY_PATH/bin" — stubs must win
                "CALLS": str(self.calls), "COUNT": str(self.tmp / "count"),
+               "BARBARIAN_UNINSTALL_SETTLE": "0",
                "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "/tmp")}
         return subprocess.run([str(SCRIPT), *args], capture_output=True, text=True, env=env)
 
@@ -67,6 +69,46 @@ class Install(unittest.TestCase):
 
     def installed(self):
         return sorted(p.name for p in (self.home / PLUGIN).rglob("*") if p.is_file())
+
+    def test_the_old_reptile_plugin_is_migrated_away(self):
+        """Q-102: entry out of both files, folder to the trash, all in the install run."""
+        import json
+        old = self.home / ".config/omarchy/plugins/tinkerbell.reptile"
+        old.mkdir(parents=True)
+        (old / "manifest.json").write_text("{}\n")
+        shell = self.home / ".config/omarchy/shell.json"
+        shell.write_text(json.dumps({"bar": {"layout": {
+            "left": [], "center": [],
+            "right": [{"id": "tinkerbell.reptile"}, {"id": "omarchy.clock"}]}}}) + "\n")
+        hidden = self.home / ".config/omarchy/bar-hidden.json"
+        hidden.write_text(json.dumps({"left": [], "center": [],
+                                      "right": [{"index": 0, "entry": {"id": "tinkerbell.reptile"}}]}) + "\n")
+        result = self.run_install()
+        self.assertFalse(old.exists(), result.stdout + result.stderr)
+        layout = json.loads(shell.read_text())["bar"]["layout"]
+        self.assertEqual([e["id"] for e in layout["right"]], ["omarchy.clock"])
+        self.assertEqual(json.loads(hidden.read_text())["right"], [])
+        self.assertIn("went to the trash", result.stdout)
+
+    def test_the_migration_reminds_while_the_keybind_still_names_the_old_id(self):
+        (self.home / ".config/omarchy/plugins/tinkerbell.reptile").mkdir(parents=True)
+        (self.home / ".config/omarchy/plugins/tinkerbell.reptile/manifest.json").write_text("{}\n")
+        (self.home / ".config/hypr/bindings.lua").parent.mkdir(parents=True)
+        (self.home / ".config/hypr/bindings.lua").write_text(
+            'bind("HYPER+L", "omarchy-shell tinkerbell.reptile toggle")\n')
+        result = self.run_install()
+        self.assertIn("keybind reminder", result.stdout)
+        self.assertIn("omarchy-shell tinkerbell.arrange layouts", result.stdout)
+
+    def test_no_ghost_ids_in_what_ships(self):
+        """Q-101: one identity — nothing that installs may name the old id; only the
+        installer itself (which removes it) and the docs may."""
+        hits = []
+        for folder in ("plugin", "engine", "hooks"):
+            for path in (ROOT / folder).rglob("*"):
+                if path.is_file() and "tinkerbell.reptile" in path.read_text():
+                    hits.append(str(path.relative_to(ROOT)))
+        self.assertEqual(hits, [])
 
     def test_an_unlocked_run_installs_and_restarts_the_shell(self):
         result = self.run_install()

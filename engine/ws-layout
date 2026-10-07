@@ -359,8 +359,9 @@ def card_down():
 
 
 def reptile_ipc(*args):
+    # The panel rides Barbarian's target since the merge (2026-10-07, Q-101): one id everywhere.
     try:
-        subprocess.run(["omarchy-shell", "-q", "tinkerbell.reptile", *args],
+        subprocess.run(["omarchy-shell", "-q", "tinkerbell.arrange", *args],
                        capture_output=True, timeout=5)
     except Exception:
         pass
@@ -1575,8 +1576,9 @@ def columns(ws, want=None):
 
 
 # ------------------------------------------------------------------- panel
-# What the Reptile panel (tinkerbell.reptile, HYPER+L) reads and writes. It never touches a
-# recording itself: every change comes back through `edit`, so the file format has one writer.
+# What the Reptile panel (now Barbarian's Reptile.qml, HYPER+L) reads and writes. It never
+# touches a recording itself: every change comes back through `edit`, so the file format has
+# one writer.
 
 # What a window is called on the panel. Classes are what Hyprland reports; nobody wants to read
 # "chrome-calendar.google.com__calendar_r_week-Profile_1" in a box the size of a stamp.

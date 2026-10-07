@@ -6,6 +6,16 @@ dragging (or with `j`/`k` + `J`/`K`), add, reorder and delete workspaces (desks)
 each desk its own wallpaper. `Ctrl+Z` undoes any change made while the panel is open,
 and `Ctrl+Shift+Z` (or `Ctrl+Y`) redoes it.
 
+Since 2026-10-07 it is also the home of **Reptile**, its former sibling plugin: the
+desk-layouts panel opened with `HYPER+L`, where every desk's recording is drawn as
+blocks — drag to swap, drag the line to resize, `×` removes, `+` adds, saved as you
+go — plus the quick-apps tab that gives an app a key of its own. One plugin, one
+installer, one id: the keybind is now
+`omarchy-shell tinkerbell.arrange layouts` (the old `tinkerbell.reptile` target is
+migrated away by `install.sh`, which also prints the keybind reminder while
+`~/.config/hypr/bindings.lua` still names the old id). Reptile's commit history was
+grafted in — `git log --follow plugin/Reptile.qml`.
+
 The grid button beside the tick and cross switches to **icon-only mode**: three rows
 in the bar's own order, each placed as it sits on the bar — the left lane's glyphs at
 the left edge, the workspaces as chips in the middle, the right lane's glyphs at the
@@ -113,6 +123,9 @@ keeps in line.
   overlay entry point, the theme grid (`ThemeRemover.qml` and the `Theme*.qml` beside it). It draws nothing
   on the bar (zero width); it exists to host the panel and its IPC target, toggled
   with `qs -p /usr/share/omarchy/shell ipc call tinkerbell.arrange toggle`.
+  `Reptile.qml`, instantiated by `Panel.qml`, is the merged-in layouts panel (HYPER+L,
+  via `ipc call tinkerbell.arrange layouts`): its own window, header and keyboard
+  model, riding the same IPC target.
   On close it writes the new order straight into Omarchy's `shell.json` (whole
   entries move, so each widget's per-widget settings travel with it) and parks
   hidden widget ids in `~/.config/omarchy/bar-hidden.json`.
@@ -125,9 +138,11 @@ keeps in line.
   four bars, so the restart rides with the installer's next run instead. It waits out any
   desk renumber and refuses while the screen is locked (a write under `plugins/` reloads
   the whole shell — see `install.sh`).
-- **`engine/per-workspace-wallpaper.sh`** — the wallpaper watcher that applies those
-  pins on every workspace switch and theme change. The panel's scripts call it after
-  each pick; on the author's machine a user service keeps it running.
+- **`engine/`** — `per-workspace-wallpaper.sh` is the wallpaper watcher that applies those
+  pins on every workspace switch and theme change. `ws-layout` and `quick-app` came with
+  Reptile: recordings and restores for desk layouts, and the quick-apps engine. They
+  install to `~/.config/omarchy/workspace-layout/`, where they have always lived, and the
+  installer compiles them before writing (a broken engine never installs).
 
 ## Requirements
 

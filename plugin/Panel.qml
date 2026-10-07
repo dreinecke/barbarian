@@ -66,6 +66,12 @@ import "." as Reordering
 // the moment it opened; so while changes are pending the button is dimmed and says to apply or
 // cancel them first.
 //
+// REPTILE MERGED IN since 2026-10-07 (Dave: "merge reptile into barbarian so it's one single
+// system"; Q-101 settled: one id everywhere): Reptile.qml — the HYPER+L desk-layouts panel and
+// its quick-apps tab, once a plugin of its own — is instantiated below and its
+// IPC handler rides this panel's target (`layouts`, plus the engines' laying/explain/…).
+// install.sh migrates machines off the old plugin; its engines moved into engine/.
+//
 // UNINSTALLING since 2026-09-28 (Dave: "right click on an item and if it is an installed
 // plugin, be able to select 'Uninstall'"): a tile whose widget is an installed plugin — a
 // folder with a manifest under ~/.config/omarchy/plugins — offers Uninstall at its menu's
@@ -298,7 +304,6 @@ Panel {
       "io.github.kristoferlund.webcam": "󰄀",
       "nixfred.blip": "󰭻",
       "digitalfrost84.auto-dark-mode": "󰔎",
-      "tinkerbell.reptile": "󱔎",
       "io.github.thisisgm.omapods": "󱡏",
       "omarchy.tray": "󰍜",
       "tinkerbell.tray": "󰍜",
@@ -1396,6 +1401,12 @@ Panel {
     onLoaded: root.restoreView(text())
     onFileChanged: reload()
   }
+
+  // Reptile's layouts panel (merged in 2026-10-07, Q-101): its own window, header and
+  // keyboard model, instantiated here because a plugin has one bar widget and this is it.
+  // Its IPC handler (in Reptile.qml) rides this panel's target — HYPER+L calls
+  // `omarchy-shell tinkerbell.arrange layouts`.
+  Reordering.Reptile { id: reptilePanel }
 
   // The row delegate both columns share. Drag within a column reorders live; drag past
   // the column gap and release, and the row lands in the other column at the drop spot.
