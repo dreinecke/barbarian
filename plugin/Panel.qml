@@ -1429,8 +1429,11 @@ Panel {
   // Reptile's layouts panel (merged in 2026-10-07, Q-101): its own window, header and
   // keyboard model, instantiated here because a plugin has one bar widget and this is it.
   // Its IPC handler (in Reptile.qml) rides this panel's target — HYPER+L calls
-  // `omarchy-shell tinkerbell.arrange layouts`.
-  Reordering.Reptile { id: reptilePanel }
+  // `omarchy-shell tinkerbell.arrange layouts`. The shell injects `bar` only into the
+  // widget IT loads (this root), and KeyboardPanel positions its card from the bar's
+  // window — without the hand-down the child's panel mapped a card built from a null bar
+  // and painted nothing (found 2026-10-07, the invisible HYPER+L).
+  Reordering.Reptile { id: reptilePanel; bar: root.bar }
 
   // The row delegate both columns share. Drag within a column reorders live; drag past
   // the column gap and release, and the row lands in the other column at the drop spot.
