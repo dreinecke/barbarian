@@ -1,0 +1,1873 @@
+#!/usr/bin/env python3
+"""ws-layout — REPTILE (re-tile; named by Dave 2026-09-03, a pair with Barbarian, the bar manager):
+record which windows a workspace holds and how they are arranged, and put it back.
+
+    ws-layout snapshot [ws]   record the desk: which windows, and the order they open in to rebuild it
+    ws-layout restore  [ws]   open what is missing, close what does not belong, rebuild the arrangement
+                              only when it differs from the recording
+    ws-layout show     [ws]   print the recording's opening order and whether the desk matches it now
+    ws-layout columns  [n]    spread this workspace's tiled windows into equal side-by-side columns
+    ws-layout desks           every desk's recording as JSON, drawn as unit-square rectangles with
+                              the desk's own gaps — the Reptile panel's model (plus what is open but
+                              unrecorded, and the apps a recording can name)
+    ws-layout edit <ws> <op>  change a recording and print `desks` again. Ops: remove <i> ·
+                              add <class> [<after> r|d] [title] · swap <i> <j> · share <i> <0.1-0.9>
+                              · unfloat <i> (drop a floating window from the recording)
+    ws-layout fill <token> <launch> <match> <name>
+                              open an app in a placeholder's place (the placeholder's buttons)
+    ws-layout forget <token>  take a placeholder's window out of its desk's recording, and close it
+
+All default to the workspace Dave is on. Bound to HYPER+S, HYPER+R and HYPER+3 (see bindings.lua).
+⚠️ SAVE MOVED FROM N TO S ON 2026-08-11; HYPER+N is deliberately left unbound so old muscle memory
+fails loudly rather than two keys doing one job.
+
+THE RECORDING IS THE SPEC. Dave arranges a desk, presses HYPER+S, and from then on HYPER+R and every
+login put it back. Nothing else lists what a desk holds: boot-apps.sh's hand-kept fleet and
+tile-windows.sh's hand-written trees were both deleted on 2026-09-03 (`git show v1.57.17:` has them).
+
+⚠️ NOTHING IS MOVED AFTER IT OPENS (Dave, 2026-09-03). The first version recorded every window's
+exact rectangle and rebuilt it — float everything, re-tile, nudge each split twice — and that was
+the "window dance" he saw at every login, even for a lone window that ended up exactly where it
+started. A recording is now the OPENING ORDER: which window each new one is opened beside (dwindle
+splits the focused window's cell), on which side (`preselect`), and what SHARE of the cell the
+existing side keeps. Restore sets dwindle's default split ratio to that share right before each
+window opens, so it appears at the recorded size, and waits for it to map before starting the next.
+Shares are proportions, not pixels, so a recording gives the same look on a smaller screen. A desk
+that already holds the right windows in the right arrangement is not rebuilt; if a split has been
+dragged by hand since the recording, it gets one resize — the same move as SUPER+/- — and nothing
+else moves.
+
+⚠️ RESTORE CLOSES WINDOWS, so two rules are hard-coded rather than configurable:
+  · an agent seat's terminal is NEVER closed (`NEVER_CLOSE`), because closing one leaves the seat
+    running with nothing showing it — the exact fault fixed on 2026-08-11;
+  · closing is `window.close`, which is a polite request the app can refuse, never a kill.
+"""
+
+import functools
+import json
+import os
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+from collections import Counter
+
+HOME = os.path.expanduser("~")
+# WS_LAYOUT_SNAPS points the tool at another recordings directory — for tests, never for real use.
+SNAP_DIR = os.environ.get("WS_LAYOUT_SNAPS") or os.path.join(HOME, ".config/omarchy/workspace-layout/snapshots")
+ATTACH_DIR = os.path.join(HOME, ".config/omarchy/workspace-layout")
+
+# How long to wait for a launched app to put a window up before giving up on it and moving on.
+# Chrome from cold and NoMachine connecting are the slow ones; both are well inside this.
+OPEN_TIMEOUT = 30.0
+
+# A split whose share of its cell is within this of the recording is left alone (1% of the desk
+# is a couple of dozen pixels on the 5K — below what a hand-drag or a SUPER+/- step moves).
+SHARE_TOLERANCE = 0.01
+
+# Seats whose terminal must survive a restore even when it is not in the recording.
+NEVER_CLOSE = {
+    "claude-tinkerbell", "codex-tinkerbell",
+    "claude-hazel", "codex-hazel",
+    "claude-gandalf", "codex-gandalf",
+    "claude-kirk",
+}
+
+# The quick apps are spared too: a window summoned onto this desk by its own key is a guest, not a
+# stray, and closing it would throw away the page the key exists to keep.
+#
+# ⚠️ READ FROM THE SAME LIST quick-app uses, never copied into this file. A second copy of the apps
+#    here would be right the day it was written and would have no way to learn the first had
+#    changed — which is exactly what happened between 2026-09-05 and 2026-09-06.
+QUICK_APPS_FILE = os.path.join(HOME, ".config/omarchy/workspace-layout/quick-apps.json")
+
+
+def quick_app_prefixes():
+    """Window-class prefixes of every quick app. Literal prefixes, not patterns — the same string
+    quick-app matches with in Lua, so neither side has to interpret the other's syntax."""
+    try:
+        with open(QUICK_APPS_FILE) as f:
+            return [a["match"] for a in json.load(f).get("apps", []) if a.get("match")]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def never_close(klass):
+    return klass in NEVER_CLOSE or any(klass.startswith(p) for p in quick_app_prefixes())
+
+# How to put a window back when the recording has one and the desk does not. Keyed by window class.
+# A class missing from here is still recorded; it simply cannot be re-opened, and restore says so
+# rather than pretending.
+LAUNCHERS = {
+    "chrome-mail.google.com__mail_-Profile_1":
+        "omarchy-launch-webapp 'https://mail.google.com/mail/?authuser=david@webscape.co.za#inbox' --profile-directory='Profile 1'",
+    "chrome-calendar.google.com__calendar_r_week-Profile_1":
+        "omarchy-launch-webapp 'https://calendar.google.com/calendar/r/week?authuser=david@webscape.co.za' --profile-directory='Profile 1'",
+    "chrome-mail.google.com__mail_-Default":
+        "omarchy-launch-webapp 'https://mail.google.com/mail/?authuser=david.reinecke@gmail.com#inbox' --profile-directory=Default",
+    "chrome-calendar.google.com__calendar_r_week-Default":
+        "omarchy-launch-webapp 'https://calendar.google.com/calendar/r/week?authuser=david.reinecke@gmail.com' --profile-directory=Default",
+    "chrome-tinkerbell.anotherdave.net__-Default":
+        "omarchy-launch-webapp 'https://tinkerbell.anotherdave.net/' --profile-directory=Default",
+    "chrome-mermaid.ai__app_dashboard-Default":
+        "omarchy-launch-webapp 'https://mermaid.ai/app/dashboard' --profile-directory=Default",
+    "com.rtosta.zapzap": "uwsm-app -- zapzap",
+    "bluebubbles": "uwsm-app -- bluebubbles",
+    # ⚠️ `--new-window` IS LOAD-BEARING. Nautilus is single-instance: invoking it bare while a copy
+    # is already running raises that copy's window instead of opening one, so restoring two desks
+    # that each want a Files window would produce one window and a silent shortfall.
+    # Downloads, not Home: it is the folder both of Dave's recorded Files windows are showing and
+    # the one his SUPER+F bind opens. A restored window that came back on a different folder would
+    # be the layout restored and the desk still wrong.
+    "org.gnome.Nautilus": "uwsm-app -- nautilus --new-window /home/anotherdave/Downloads",
+    # The two remote desktops (2026-09-01, from the MacBook's first login replay: "the
+    # Remmina on JSE and the NoMachine on Mac did not load themselves"). Remmina reopens
+    # its main window — a recorded session window cannot be reopened into a session, and
+    # the window Dave records IS usually the main window. NoMachine goes through mac-desk,
+    # which points nxplayer at the repo-tracked Mac-mini connection on both machines.
+    "org.remmina.Remmina": "uwsm-app -- remmina",
+    "Nxplayer.bin": "/home/anotherdave/.local/bin/mac-desk",
+    "claude-tinkerbell": f"alacritty --class claude-tinkerbell --title '🧚 Tinkerbell' -e {ATTACH_DIR}/tinkerbell-claude-attach.sh",
+    "codex-tinkerbell": f"alacritty --class codex-tinkerbell --title '🤖 Tinkerbell Codex' -e {ATTACH_DIR}/tinkerbell-codex-attach.sh",
+    "claude-hazel": f"alacritty --class claude-hazel --title '🐿️ Hazel' -e {ATTACH_DIR}/hazel-claude-attach.sh",
+    "codex-hazel": f"alacritty --class codex-hazel --title '🤖 Hazel Codex' -e {ATTACH_DIR}/hazel-codex-attach.sh",
+    "claude-gandalf": f"alacritty --class claude-gandalf --title '🧙 Gandalf' -e {ATTACH_DIR}/claude-gandalf-attach.sh",
+    "codex-gandalf": f"alacritty --class codex-gandalf --title '🤖 Gandalf Codex' -e {ATTACH_DIR}/gandalf-codex-attach.sh",
+    "claude-kirk": f"alacritty --class claude-kirk --title '🖖 Kirk' -e {ATTACH_DIR}/kirk-claude-attach.sh",
+}
+
+# ⚠️ EVERY PLAIN CHROME WINDOW HAS THE SAME CLASS, so which profile to re-open depends on the desk,
+# not on the window. That is the same reason the window rules cannot route them and
+# `chrome-profile-window` places them by address instead.
+#
+# ⚠️ THE PROFILE IS READ FROM THE DESK TABLE, NOT KEPT HERE. The machine's desk table
+# (~/.config/hypr/workspaces.lua, the live copy Hyprland runs) carries `chrome = "Profile 1"` on
+# the Webscape entry, beside the `mail` field the bar's mail panel reads the same way. Until
+# 2026-09-19 this file had its own table keyed by desk number, and Barbarian now reorders and
+# deletes desks: after Webscape (2) and Personal (3) swapped, HYPER+R on desk 2 — now Personal —
+# reopened its Chrome on Webscape's profile, and a re-recording wrote the wrong profile in too.
+# The desk table's ids are rewritten by Barbarian's renumber and a rename never touches the field,
+# so the field stays with its desk through both. A machine without the file, or a desk without
+# the field, gets Default.
+#
+# Default is also what every other desk gets (2026-09-01, from the MacBook's first login replay:
+# the Chrome windows on ws4-6 had no launcher at all, so login skipped them). Chrome's own
+# per-profile session restore is what brings the tabs back; this only reopens the window.
+#
+# ⚠️ PERSONAL CARRIED THE THREE ADMIN SITES AS TABS UNTIL 2026-08-20, and this launcher was the
+# SECOND place that opened them — boot-apps.sh was the first. Dropping them from only that one
+# would have brought them straight back at login, because login replays the recording and a
+# missing Chrome window is re-opened from here. Dave: "Please make the Personal workspace not
+# load those three websites upon startup anymore."
+DESK_TABLE = os.path.join(HOME, ".config/hypr/workspaces.lua")
+DESK_CHROME = re.compile(r'\{\s*id\s*=\s*"(\d+)".*\bchrome\s*=\s*"([^"]+)"')
+
+
+def chrome_profiles(path=DESK_TABLE):
+    """{desk number: Chrome profile} from the desk table's `chrome` fields. Comment lines are
+    skipped, as the mail panel skips them."""
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return {}
+    found = {}
+    for line in lines:
+        if line.lstrip().startswith("--"):
+            continue
+        entry = DESK_CHROME.search(line)
+        if entry:
+            found[int(entry.group(1))] = entry.group(2)
+    return found
+
+
+def launcher_for(klass, ws):
+    """How to open a window of this class on desk `ws`, or None when there is no way.
+
+    ⚠️ LAUNCHERS IS ONLY THE FIRST PLACE TO LOOK. Until 2026-09-19 it was the only one, so HYPER+R
+    reopened the twenty-odd apps listed above and nothing else: Dave recorded VS Code on Gandalf,
+    and HYPER+R put up a placeholder for it ("We cannot reopen VS Code? What CAN we reopen
+    then?"). Any other app is now opened by its installed launcher — the .desktop file whose
+    window class it is (`installed_app_for`). A terminal is not opened from here at all: which
+    terminal it was is in what it was running, which HYPER+S reads and stores in the recording
+    (`terminal_record`)."""
+    if klass == "google-chrome":
+        profile = chrome_profiles().get(ws, "Default")
+        return f"{ATTACH_DIR}/chrome-profile-window {shlex.quote(profile)} {ws}"
+    if klass in LAUNCHERS:
+        return LAUNCHERS[klass]
+    if kind_of(klass) == "terminal":
+        return None
+    app = installed_app_for(klass)
+    if not app:
+        return None
+    launch = app["launch"]
+    # omarchy-launch-webapp and the uwsm wrappers put the app in its own session scope themselves.
+    return launch if launch.startswith(("uwsm", "omarchy-launch")) else f"uwsm-app -- {launch}"
+
+
+@functools.lru_cache(maxsize=None)
+def installed_apps():
+    """Every installed launcher, as quick-app lists them: label, launch command, window class."""
+    try:
+        out = subprocess.run([os.path.join(ATTACH_DIR, "quick-app"), "apps"],
+                             capture_output=True, text=True, timeout=10).stdout
+        apps = json.loads(out or "[]")
+        return tuple(apps) if isinstance(apps, list) else ()
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return ()
+
+
+def class_fits(klass, match):
+    """Does a window of this class belong to the launcher whose `match` this is? quick-app's
+    rule — a web app's windows share a prefix (chrome-<host>__), any other app's windows have its
+    class — but without case, because a desktop file and its window often disagree on it: VS
+    Code's says Code, its window says code."""
+    k, m = klass.lower(), match.lower()
+    return bool(m) and (k.startswith(m) if m.endswith("__") else k == m)
+
+
+def installed_app_for(klass):
+    """The installed launcher that opens windows of this class, or None. A web app's class ends
+    in the Chrome profile it runs in (…-Default, …-Profile_1), and its launcher only counts when
+    it opens that same profile — otherwise the window would come back under another class."""
+    for app in installed_apps():
+        if not app.get("launch") or not class_fits(klass, app.get("match", "")):
+            continue
+        if app.get("web"):
+            profile = re.search(r"--profile-directory=['\"]?([^'\"]+)['\"]?", app["launch"])
+            if not klass.endswith("-" + (profile.group(1) if profile else "Default").replace(" ", "_")):
+                continue
+        return app
+    return None
+
+
+def sh(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout
+
+
+def dispatch(lua):
+    """One Hyprland dispatch. ⚠️ Quattro parses the argument as LUA — the old
+    `hyprctl dispatch movewindow 5` string form is a syntax error, not a no-op."""
+    return subprocess.run(["hyprctl", "dispatch", lua], capture_output=True, text=True).stdout.strip()
+
+
+# ⚠️ A PLACEHOLDER IS THE WINDOW IT STANDS IN FOR. When HYPER+R cannot reopen a recorded window
+# it puts up a placeholder in that window's place (the Reptile panel draws it — see `placeholder`
+# in Panel.qml): why the window is missing, and a way to open an app there (Dave, 2026-09-19).
+# Hyprland knows it as a window of the shell's own class, org.quickshell; its title says which
+# class it stands in for, a token that names this one placeholder, and the recorded title. Every
+# client read goes through here and is given the class and title it stands in for, so the rest
+# of the engine never tells the two apart: the next HYPER+R finds the terminal "here" and leaves
+# the desk alone, HYPER+S records the terminal, not the shell — and close_extras closes a
+# placeholder before the real window it would otherwise be counted against.
+PLACEHOLDER_CLASS = "org.quickshell"
+PLACEHOLDER_TITLE = re.compile(r"^Reptile · missing (\S+) · ([0-9a-f]{6})(?: · (.*))?$")
+# The panel puts a placeholder up in well under a second; this only stops a panel too old to
+# know about placeholders from holding the restore up.
+PLACEHOLDER_TIMEOUT = 5.0
+
+
+def clients():
+    found = json.loads(sh("hyprctl clients -j") or "[]")
+    for c in found:
+        stand_in = PLACEHOLDER_TITLE.match(c.get("title", "")) if c.get("class") == PLACEHOLDER_CLASS else None
+        if stand_in:
+            c["class"], c["placeholder"], c["title"] = stand_in.group(1), stand_in.group(2), stand_in.group(3) or ""
+    return found
+
+
+def active_ws():
+    return json.loads(sh("hyprctl activeworkspace -j") or "{}").get("id", 1)
+
+
+def on_ws(ws):
+    return [c for c in clients() if c["workspace"]["id"] == ws]
+
+
+def tiled_on(ws):
+    return [c for c in on_ws(ws) if not c["floating"]]
+
+
+def by_position(wins):
+    return sorted(wins, key=lambda c: (c["at"][0], c["at"][1]))
+
+
+def wait_until(cond, timeout, step=0.1):
+    """Poll `cond` until it is true or `timeout` seconds pass. No fixed sleeps anywhere else: every
+    wait in this file is for a specific thing to have happened, and moves on the moment it has."""
+    t0 = time.monotonic()
+    while True:
+        if cond():
+            return True
+        if time.monotonic() - t0 > timeout:
+            return False
+        time.sleep(step)
+
+
+def default_split_ratio():
+    out = sh("hyprctl getoption dwindle:default_split_ratio")
+    m = re.search(r"float:\s*([0-9.]+)", out)
+    return float(m.group(1)) if m else 1.0
+
+
+def set_default_split_ratio(ratio):
+    """Dwindle gives the FIRST (left/top) side of every new split `ratio / 2` of the cell, so a
+    share of 0.35 is a ratio of 0.7. ⚠️ `hyprctl keyword` refuses under Quattro's Lua config
+    ("keyword can't work with non-legacy parsers. Use eval."); this is the form that works, and
+    it changes nothing else in the dwindle table (checked 2026-09-03)."""
+    ratio = max(0.1, min(1.9, ratio))
+    sh(f"hyprctl eval 'hl.config({{ dwindle = {{ default_split_ratio = {ratio:.3f} }} }})'")
+
+
+def snap_path(ws):
+    return os.path.join(SNAP_DIR, f"ws{ws}.json")
+
+
+def ws_name(ws):
+    return next((w["name"] for w in json.loads(sh("hyprctl workspaces -j") or "[]")
+                 if w["id"] == ws), str(ws))
+
+
+# ⚠️ NO DESKTOP NOTIFICATIONS. Reptile's one voice is the card the Reptile panel draws at the
+# bottom of the screen — "Reptile is laying out your Webscape workspace", the snake beside it —
+# see `laying` / `laid` in omarchy/quickshell/reptile/Panel.qml. It stays up while a desk is
+# being worked on, and for a moment and a half at least when the work was quick, so a HYPER+R
+# on a desk that is already as saved still answers. Dave asked on 2026-08-30 for a notify-send
+# toast that also landed in the notification history; on 2026-09-03 he saw "Reptile: workspace
+# 2 (Webscape) is as saved — 3 windows closed." in the corner and said "I don't actually like
+# [it] and we should stop doing [it]" — gone, for restores and for HYPER+S alike. Best-effort:
+# no shell, no card, never an error. ⚠️ --quiet (the login pass) shows the card only for a desk
+# that actually needs windows opened, closed or resized; a settled desk passes in silence, as
+# Dave asked of the login pass the same day.
+ANNOUNCE = True
+
+
+def card(message, reason=None):
+    # The headline goes up on its own first, so a panel older than `explain` still shows it —
+    # Quickshell keeps running the panel it compiled until the shell restarts, and the other
+    # machines get this engine by ship-sync with nobody there to restart it.
+    reptile_ipc("laying", message)
+    if reason:
+        reptile_ipc("explain", message, reason)
+
+
+def card_down():
+    reptile_ipc("laid")
+
+
+def reptile_ipc(*args):
+    try:
+        subprocess.run(["omarchy-shell", "-q", "tinkerbell.reptile", *args],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
+
+
+def desk_words(ws, name):
+    """'your Webscape workspace', or 'workspace 9' for a desk with no name."""
+    return f"your {name} workspace" if isinstance(name, str) and name and name != str(ws) else f"workspace {ws}"
+
+
+# ------------------------------------------------------------------ the tree
+# A tree is a nested list: ["leaf", window] or [kind, left_or_top, right_or_bottom, share], kind
+# "v" for side by side and "h" for stacked, share the fraction of the cell the left/top side has
+# (None when it cannot be read). Lists rather than tuples so a leaf can be split in place.
+
+def split_tree(rects):
+    """Infer the guillotine tree behind a set of tiled rectangles.
+
+    Every dwindle layout is a series of full-width or full-height cuts, so the tree can be read
+    straight back off the geometry: find a vertical line no rectangle straddles (a column split),
+    else a horizontal one (a row split), and recurse.
+    """
+    if len(rects) == 1:
+        return ["leaf", rects[0]]
+
+    for axis, kind in ((0, "v"), (1, "h")):
+        edges = sorted({r["at"][axis] + r["size"][axis] for r in rects})
+        for cut in edges[:-1]:
+            a = [r for r in rects if r["at"][axis] + r["size"][axis] <= cut + 8]
+            b = [r for r in rects if r["at"][axis] >= cut - 8]
+            if a and b and len(a) + len(b) == len(rects):
+                # The split line runs through the middle of the gap between the two sides; its
+                # place along the cell is the share. Gaps at the cell's outer edges are ignored,
+                # which is a few pixels on a 5K desk — proportions, not pixels, are the point.
+                lo, hi = extent(rects, axis)
+                mid = (max(r["at"][axis] + r["size"][axis] for r in a) + min(r["at"][axis] for r in b)) / 2
+                share = (mid - lo) / (hi - lo) if hi > lo else None
+                return [kind, split_tree(a), split_tree(b), share]
+
+    # Not a clean guillotine (overlapping or a maximized window among the rest) — fall back to a
+    # left-to-right row so the result is still usable rather than nothing.
+    return ["v", ["leaf", rects[0]], split_tree(rects[1:]), None]
+
+
+def extent(rects, axis):
+    return (min(r["at"][axis] for r in rects), max(r["at"][axis] + r["size"][axis] for r in rects))
+
+
+def first_leaf(node):
+    return node[1] if node[0] == "leaf" else first_leaf(node[1])
+
+
+def leaves(node):
+    return [node[1]] if node[0] == "leaf" else leaves(node[1]) + leaves(node[2])
+
+
+def steps_from_tree(tree):
+    """The opening order that rebuilds `tree` under dwindle: the root's first window, then one step
+    per split in pre-order — open the right/bottom side's first window beside the left/top side's
+    first window. Pre-order is forced, not a choice: dwindle can only ever split ONE window's cell,
+    so a window that sits beside a PAIR has to open before that pair is split.
+
+    Each step is {"win": <window>, "after": <index of the window it splits, or None>, "side": r|d,
+    "share": <fraction of the cell the left/top side keeps>, "node": <the split itself>}.
+    """
+    steps, index = [], {}
+
+    def add(win, after, side, share=None, node=None):
+        index[id(win)] = len(steps)
+        steps.append({"win": win, "after": after, "side": side, "share": share, "node": node})
+
+    add(first_leaf(tree), None, None)
+
+    def walk(node):
+        if node[0] == "leaf":
+            return
+        kind, a, b, share = node
+        add(first_leaf(b), index[id(first_leaf(a))], "r" if kind == "v" else "d", share, node)
+        walk(a)
+        walk(b)
+
+    walk(tree)
+    return steps
+
+
+def tree_from_steps(steps):
+    """Replay an opening order on paper to get its tree back. `l` and `u` (a hand-edited recording)
+    put the newcomer on the left/top; the tool itself only ever writes r and d."""
+    if not steps:
+        return None
+    root = ["leaf", steps[0]["win"]]
+    leaf_of = {0: root}
+    for i, s in enumerate(steps[1:], 1):
+        anchor = leaf_of[s["after"]]
+        kind = "v" if s["side"] in ("r", "l") else "h"
+        theirs, mine = ["leaf", anchor[1]], ["leaf", s["win"]]
+        share = s.get("share")
+        anchor[:] = [kind, theirs, mine, share] if s["side"] in ("r", "d") else [kind, mine, theirs, share]
+        leaf_of[s["after"]] = theirs
+        leaf_of[i] = mine
+    return root
+
+
+def prune(tree, keep):
+    """Drop the leaves `keep` rejects; a split left with one side becomes that side."""
+    if tree[0] == "leaf":
+        return tree if keep(tree[1]) else None
+    a, b = prune(tree[1], keep), prune(tree[2], keep)
+    return [tree[0], a, b, tree[3]] if a and b else (a or b)
+
+
+def steps_of(record):
+    """A recording's opening order. Format 2 stores it; format 1 (before 2026-09-03, and every
+    recording the MacBook still has) stored rectangles only, so the tree is read off those."""
+    wins = record.get("windows", [])
+    if not wins:
+        return []
+    if record.get("format", 1) >= 2 and all("side" in w for w in wins):
+        return [{"win": w, "after": w["after"], "side": w["side"], "share": w.get("share"), "node": None}
+                for w in wins]
+    return steps_from_tree(split_tree(by_position(wins)))
+
+
+def describe(steps):
+    lines = []
+    for i, s in enumerate(steps, 1):
+        where = ""
+        if s["after"] is not None:
+            where = {"r": "right of", "l": "left of", "d": "below", "u": "above"}[s["side"]] + f" {s['after'] + 1}"
+            if s.get("share") is not None:
+                keeps = s["share"] if s["side"] in ("r", "d") else 1 - s["share"]
+                where += f", which keeps {round(keeps * 100)}% of the {'width' if s['side'] in ('r', 'l') else 'height'}"
+        lines.append(f"  {i}. {s['win']['class']}  {where}".rstrip())
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- snapshot
+
+# ------------------------------------------------------------- floating windows
+# ⚠️ A FLOATING WINDOW IS RECORDED TOO, BY ITS RECTANGLE (Dave, 2026-09-21: "We DEFINITELY want to
+# capture floating windows!"). It sits in no tree — nothing is opened beside it — so what a
+# recording keeps is where it sat and how big it was, as fractions of the screen below the bar,
+# and restore puts it back there. Until then a floating window was a stray: never recorded, and
+# closed by the next HYPER+R. Obsidian on stock Omarchy is one, and that is how this was found.
+#
+# ⚠️ A DIALOG IS NOT A WINDOW OF ITS OWN. Hyprland reports no parent for one, so a print dialog
+# and a "Save changes?" box look exactly like a small floating window of the app. The rule: a
+# floating window whose class already has a TILED window on this desk is that window's dialog and
+# is left out. A dialog for an app that is NOT tiled here is still recorded — there is nothing to
+# tell them apart — and restoring it opens the app, not the dialog.
+FLOAT_TOLERANCE = 0.02      # of the screen; a window moved by hand inside this is left alone
+
+
+def floating_on(ws):
+    """The floating windows a recording may hold: no dialogs, no seats, no quick-app guests."""
+    tiled = {c["class"] for c in tiled_on(ws)}
+    # A placeholder standing in for a floating window is read as that window (`clients`), so it
+    # belongs in this list: the next restore finds its place kept rather than making a second one.
+    return by_position([c for c in on_ws(ws)
+                        if c["floating"] and c.get("mapped", True)
+                        and c["class"] not in tiled and not never_close(c["class"])])
+
+
+def float_record(c, ws, g):
+    """One floating window as a recording holds it: its launch command and its rectangle, in
+    fractions of the screen below the bar so the same recording fits another screen."""
+    x, y = c["at"]
+    w, h = c["size"]
+    launch = launcher_for(c["class"], ws)
+    # A floating terminal is read the same way a tiled one is: reopened in its folder when it was
+    # at its prompt, offered in its placeholder when it was running something.
+    how = terminal_record(c) if kind_of(c["class"]) == "terminal" and not launch else {}
+    return {
+        "class": c["class"],
+        "title": c["title"][:60],
+        "launch": launch or how.get("launch"),
+        **({"offer": how["offer"]} if how.get("offer") else {}),
+        "at": [x, y],
+        "size": [w, h],
+        "frac": [round((x - g["x"]) / g["w"], 4), round((y - g["y"]) / g["h"], 4),
+                 round(w / g["w"], 4), round(h / g["h"], 4)],
+    }
+
+
+def float_rect(rec, g):
+    """Where a recorded floating window goes on this screen, in pixels."""
+    fx, fy, fw, fh = rec.get("frac") or [0.25, 0.25, 0.5, 0.5]
+    return (round(g["x"] + fx * g["w"]), round(g["y"] + fy * g["h"]),
+            round(fw * g["w"]), round(fh * g["h"]))
+
+
+def float_drifted(c, rec, g):
+    x, y, w, h = float_rect(rec, g)
+    slack = FLOAT_TOLERANCE * max(g["w"], g["h"])
+    return (abs(c["at"][0] - x) > slack or abs(c["at"][1] - y) > slack
+            or abs(c["size"][0] - w) > slack or abs(c["size"][1] - h) > slack)
+
+
+def put_float(c, rec, g):
+    """Float the window if it is not, then set its size and where its top-left corner sits."""
+    x, y, w, h = float_rect(rec, g)
+    address = c["address"]
+    if not c["floating"]:
+        dispatch(f'hl.dsp.window.float({{ action = "enable", window = "address:{address}" }})')
+    dispatch(f'hl.dsp.window.resize({{ x = {w}, y = {h}, window = "address:{address}" }})')
+    dispatch(f'hl.dsp.window.move({{ x = {x}, y = {y}, window = "address:{address}" }})')
+
+
+def match_floats(floats, live):
+    """Each recorded floating window to one on the desk: same class and title first, then class."""
+    pool, found = list(live), {}
+    for exact in (True, False):
+        for i, rec in enumerate(floats):
+            if i in found:
+                continue
+            c = next((c for c in pool if c["class"] == rec["class"]
+                      and (not exact or c["title"][:60] == rec.get("title", "")[:60])), None)
+            if c:
+                found[i] = c
+                pool.remove(c)
+    return found
+
+
+def restore_floats(ws, floats, say):
+    """Open the recorded floating windows that are missing, and put every one of them back where
+    it was recorded. Returns (opened, unopenable, moved)."""
+    if not floats:
+        return [], [], 0
+    g = desk_geometry()
+    found = match_floats(floats, floating_on(ws))
+    missing = [i for i in range(len(floats)) if i not in found]
+    opened, unopenable = [], []
+    if missing:
+        say()
+        stand_on(ws)
+    for i in missing:
+        rec = floats[i]
+        cmd = launcher_for(rec["class"], ws) or rec.get("launch")
+        if cmd:
+            c = open_window(rec["class"], cmd, ws, floating=True)
+        else:
+            # Nothing can open it, so its place is kept the same way a tiled window's is — the
+            # placeholder floats at the rectangle instead of taking a cell (Dave, 2026-09-21).
+            c = open_placeholder(ws, rec, floating=True)
+        if c:
+            found[i] = c
+            if cmd:
+                opened.append(rec["class"])
+        else:
+            unopenable.append(rec["class"])
+    moved = 0
+    for i, c in found.items():
+        c = next((live for live in on_ws(ws) if live["address"] == c["address"]), c)
+        if c["floating"] and not float_drifted(c, floats[i], g):
+            continue
+        say()
+        put_float(c, floats[i], g)
+        moved += 1
+    return opened, unopenable, moved
+
+
+def take_snapshot(ws):
+    wins = by_position(tiled_on(ws))
+    # An empty desk is a layout too (Dave, 2026-09-02: saving it as empty "would be WAI") — the
+    # recording says "nothing belongs here", and HYPER+R then closes whatever has wandered in.
+    name = ws_name(ws)
+    steps = steps_from_tree(split_tree(wins)) if wins else []
+    launch, offer, runs = {}, {}, []
+    for s in steps:
+        klass = s["win"]["class"]
+        launch[id(s["win"])] = launcher_for(klass, ws)
+        if kind_of(klass) == "terminal" and not launch[id(s["win"])]:
+            how = terminal_record(s["win"])
+            launch[id(s["win"])] = how.get("launch")
+            if how.get("offer"):
+                offer[id(s["win"])] = how["offer"]
+            if how.get("said"):
+                runs.append(how["said"])
+    floats = [float_record(c, ws, desk_geometry()) for c in floating_on(ws)]
+    record = {
+        "workspace": ws,
+        "name": name,
+        "format": 2,
+        # In opening order. `after` is the position (in this list) of the window each one is
+        # opened beside, `side` which side of it, `share` the fraction of that cell the existing
+        # side keeps. `at`/`size` are kept for reading, not restoring.
+        "windows": [
+            {
+                "class": s["win"]["class"],
+                "title": s["win"]["title"][:60],
+                "launch": launch[id(s["win"])],
+                "after": s["after"],
+                "side": s["side"],
+                "share": round(s["share"], 3) if s["share"] is not None else None,
+                "at": s["win"]["at"],
+                "size": s["win"]["size"],
+                **({"offer": offer[id(s["win"])]} if id(s["win"]) in offer else {}),
+            }
+            for s in steps
+        ],
+        # Floating windows: no order, no splits — each one's own rectangle (`float_record`).
+        "floating": floats,
+    }
+    write_record(record)
+    unknown = ([w["class"] for w in record["windows"] if not w["launch"] and not w.get("offer")]
+               + [f["class"] for f in floats if not f["launch"] and not f.get("offer")])
+    count = len(record["windows"]) + len(floats)
+    print(f"ws{ws} ({name}): recorded {count} windows → {snap_path(ws)}")
+    if steps:
+        print(describe(steps))
+    if floats:
+        print("  floating: " + ", ".join(f"{f['class']} at {f['at'][0]},{f['at'][1]}" for f in floats))
+    if any(c.get("fullscreen") for c in wins) and count > 1:
+        print("  ⚠️ a maximized window hides the arrangement; recorded left to right")
+    if unknown:
+        print("  ⚠️ no launch command known, so restore cannot re-open: " + ", ".join(unknown))
+    if ANNOUNCE:
+        # Told now, while the window is still open, rather than on the HYPER+R that finds it gone
+        # (Dave, 2026-09-19: "Absolutely this!").
+        running = terminals_will(runs)
+        if unknown:
+            it = "it" if len(unknown) == 1 else "them"
+            card(f"Reptile recorded {desk_words(ws, name)}, but cannot reopen {window_names(unknown)}",
+                 f"{cannot_start(unknown)} If you close {it}, Reptile cannot bring {it} back."
+                 + (f" {running}" if running else ""))
+        else:
+            card(f"Reptile recorded {desk_words(ws, name)}", running)
+        card_down()
+    return 0
+
+
+def terminals_will(runs):
+    """What restoring the desk will do with its terminals, for the HYPER+S card, or None."""
+    if not runs:
+        return None
+    if len(runs) <= 2:
+        return f"Restoring this desk will {' and '.join(runs)}."
+    return (f"Restoring this desk will bring back its {len(runs)} terminals in their folders, and offer "
+            "to run again what they were running.")
+
+
+def write_record(record):
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    with open(snap_path(record["workspace"]), "w") as f:
+        json.dump(record, f, indent=2)
+        f.write("\n")
+
+
+def record_from_steps(ws, name, steps, floats=()):
+    """A format-2 recording from an opening order (the panel's edits go through here). The
+    floating windows are carried through untouched — an edit to the tiled order must not forget
+    them."""
+    return {
+        "workspace": ws,
+        "name": name,
+        "format": 2,
+        "floating": list(floats),
+        "windows": [
+            {
+                "class": s["win"]["class"],
+                "title": str(s["win"].get("title", ""))[:60],
+                "launch": launcher_for(s["win"]["class"], ws) or s["win"].get("launch"),
+                "after": s["after"],
+                "side": s["side"],
+                "share": round(s["share"], 3) if s.get("share") is not None else None,
+                "at": s["win"].get("at"),
+                "size": s["win"].get("size"),
+                **({"offer": s["win"]["offer"]} if s["win"].get("offer") else {}),
+            }
+            for s in steps
+        ],
+    }
+
+
+# ----------------------------------------------------------------- restore
+
+def close_extras(ws, need):
+    """Close what the recording does not list — never a seat. Placeholders go first, then
+    floating strays (a dialog left behind), then the oldest tiled copies; the newest of a class
+    is the one kept."""
+    have = {}
+    for c in on_ws(ws):
+        have.setdefault(c["class"], []).append(c)
+    closing = []
+    for klass, windows in have.items():
+        if never_close(klass):
+            continue
+        windows = ([c for c in windows if c.get("placeholder")]
+                   + [c for c in windows if c["floating"] and not c.get("placeholder")]
+                   + [c for c in windows if not c["floating"] and not c.get("placeholder")])
+        for c in windows[: max(0, len(windows) - need.get(klass, 0))]:
+            dispatch(f'hl.dsp.window.close({{ window = "address:{c["address"]}" }})')
+            closing.append(c["address"])
+    if closing:
+        wait_until(lambda: not {c["address"] for c in clients()} & set(closing), 3.0)
+    return len(closing)
+
+
+def assign(steps, live):
+    """Match each recorded window to one on the desk: same class and title first, then same class."""
+    pool, assigned = list(by_position(live)), {}
+    for exact in (True, False):
+        for i, s in enumerate(steps):
+            if i in assigned:
+                continue
+            w = s["win"]
+            c = next((c for c in pool if c["class"] == w["class"]
+                      and (not exact or c["title"][:60] == w.get("title", "")[:60])), None)
+            if c:
+                assigned[i] = c
+                pool.remove(c)
+    return assigned
+
+
+def same_arrangement(live, steps, assigned):
+    """Is the desk already arranged as the recording says? Compared by shape and by which class
+    sits in each cell — never by size, and never by title (a Chrome title changes with the tab).
+    A tiled window that is here but not in the recording (a seat kept by NEVER_CLOSE) is left out
+    of the comparison: the recorded windows only have to be arranged right among themselves."""
+    mine = {c["address"] for c in assigned.values()}
+    if len(mine) != len(steps):
+        return False
+    if not steps:
+        return True
+    # A maximized window reports the whole desk as its rectangle, so the tree cannot be read off
+    # the geometry. The right windows are all here; leave them be rather than rebuild on a guess.
+    if any(c.get("fullscreen") for c in live):
+        return True
+    now = steps_from_tree(prune(split_tree(by_position(live)), lambda c: c["address"] in mine))
+    return [(s["win"]["class"], s["after"], s["side"]) for s in now] == \
+           [(s["win"]["class"], s["after"], s["side"]) for s in steps]
+
+
+def live_steps(live, assigned):
+    """The desk as it is now, as an opening order over the recorded windows only."""
+    mine = {c["address"] for c in assigned.values()}
+    if not mine:
+        return []
+    return steps_from_tree(prune(split_tree(by_position(live)), lambda c: c["address"] in mine))
+
+
+def addressable_leaf(node):
+    """A window whose nearest split along `node`'s axis IS `node`. Resizing a window moves the
+    nearest split of that axis above it (dwindle's smart_resizing), so this is the window to
+    resize to change this split — and a leaf on either side will do, since a positive delta
+    always grows the left/top side. None when every path down crosses a same-axis split."""
+    kind = node[0]
+
+    def search(n):
+        if n[0] == "leaf":
+            return n[1]
+        if n[0] == kind:
+            return None
+        return search(n[1]) or search(n[2])
+
+    return search(node[1]) or search(node[2])
+
+
+def size_gaps(live, steps, assigned):
+    """Which splits are off the recording by more than the tolerance: (index, want, now)."""
+    if any(c.get("fullscreen") for c in live):
+        return []
+    now = live_steps(live, assigned)
+    gaps = []
+    for i, (want, cur) in enumerate(zip(steps, now)):
+        if want["after"] is None or want.get("share") is None or cur["share"] is None:
+            continue
+        if abs(want["share"] - cur["share"]) > SHARE_TOLERANCE:
+            gaps.append((i, want["share"], cur["share"]))
+    return gaps
+
+
+def nudge_sizes(ws, steps, assigned):
+    """Put each split that has drifted back to its recorded share with ONE resize — the same
+    move SUPER+/- makes — outer splits first, re-reading the desk before each so the pixel
+    delta is right after the previous one. Returns how many moved."""
+    moved = 0
+    for i, want, _ in size_gaps(tiled_on(ws), steps, assigned):
+        live = tiled_on(ws)
+        now = live_steps(live, assigned)
+        if i >= len(now) or now[i]["share"] is None:
+            continue
+        node = now[i]["node"]
+        leaf = addressable_leaf(node)
+        if not leaf:
+            continue
+        axis = 0 if node[0] == "v" else 1
+        lo, hi = extent(leaves(node), axis)
+        delta = round((want - now[i]["share"]) * (hi - lo))
+        if not delta:
+            continue
+        dispatch(f'hl.dsp.focus({{ window = "address:{leaf["address"]}" }})')
+        dx, dy = (delta, 0) if axis == 0 else (0, delta)
+        dispatch(f"hl.dsp.window.resize({{ x = {dx}, y = {dy}, relative = true }})")
+        moved += 1
+    return moved
+
+
+def is_tiled(addr, ws):
+    return any(c["address"] == addr and not c["floating"] for c in on_ws(ws))
+
+
+def open_window(klass, cmd, ws, floating=False):
+    """Launch, then wait for the window it produces. Returns the client, or None on timeout."""
+    before = {c["address"] for c in clients() if c["class"] == klass}
+    subprocess.Popen(f"setsid {cmd} >/dev/null 2>&1 &", shell=True)
+    return place_new(lambda c: c["class"] == klass and c["address"] not in before, ws, OPEN_TIMEOUT,
+                     floating=floating)
+
+
+def open_placeholder(ws, win, floating=False):
+    """Ask the Reptile panel for a placeholder where `win` should be, and place it like any
+    window — floating, for a window the recording holds as floating, so the caller can put it at
+    its rectangle. None when no placeholder came — a panel older than placeholders, or none
+    running."""
+    klass = win["class"]
+    token = secrets.token_hex(3)
+    offer = win.get("offer")
+    actions = []
+    if offer:
+        headline = f"This terminal was running {offer['program']} in {offer['where']}"
+        reason = ("Reptile asks before running a program again, so a command that was only meant "
+                  "to run once is never repeated by surprise.")
+        actions.append({"kind": "run", "label": f"Run {offer['program']}", "detail": f"in {offer['where']}",
+                        "launch": offer["run"], "match": klass, "name": offer["program"]})
+        actions.append({"kind": "open", "label": "Open a new terminal", "detail": f"in {offer['where']}",
+                        "launch": offer["here"], "match": klass, "name": "a new terminal"})
+    else:
+        headline = f"Reptile could not reopen {window_names([klass])}"
+        reason = cannot_start([klass])
+        if kind_of(klass) == "terminal":
+            actions.append({"kind": "open", "label": "Open a new terminal", "detail": "",
+                            "launch": "uwsm-app -- xdg-terminal-exec", "match": "", "name": "a new terminal"})
+    actions.append({"kind": "remove", "label": "Remove from this desk", "detail": "and from its recording"})
+    reptile_ipc("placeholder", json.dumps({
+        "token": token,
+        "klass": klass,
+        "title": str(win.get("title", ""))[:60],
+        "headline": headline,
+        "reason": reason,
+        "name": window_names([klass]),
+        "actions": actions,
+    }))
+    return place_new(lambda c: c.get("placeholder") == token, ws, PLACEHOLDER_TIMEOUT,
+                     floating=floating)
+
+
+# ---------------------------------------------------------------- terminals
+# ⚠️ A TERMINAL IS RECORDED BY WHAT IT IS RUNNING, AND WHERE (Dave, 2026-09-19: "Yebo!"). Every
+# terminal window has the same class, so the class says nothing about which one it was; its
+# processes do. HYPER+S reads them — the program in the foreground and the folder it is in, or a
+# shell waiting at its prompt. A shell at its prompt is reopened by HYPER+R in its folder. A
+# program is not run again by itself: its place gets a placeholder with three buttons — run it
+# again (in the same folder, under the same shell, so quitting it leaves a shell as before), open
+# a new terminal there, or remove it from the desk. Until the same day it was run straight away,
+# and a one-off command caught in the foreground (a build, a deploy) would have been repeated at
+# every login; Dave: "Instead of auto launch, we load that placeholder with a button to say run
+# this thing X or open a new terminal or remove this." A terminal opened straight onto a program
+# (cliamp from the app launcher) is offered the same way. What cannot come back: the scrollback,
+# a half-typed command, and anything the shell was told in that session (a venv, an exported
+# variable). A terminal whose processes cannot be read — a terminal server behind several
+# windows — gets a placeholder that can only open a new terminal.
+SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "nu", "xonsh"}
+
+
+def proc_argv(pid):
+    return open(f"/proc/{pid}/cmdline").read().split("\0")[:-1]
+
+
+def proc_children(pid):
+    kids = []
+    for task in os.listdir(f"/proc/{pid}/task"):
+        with open(f"/proc/{pid}/task/{task}/children") as f:
+            kids += f.read().split()
+    return kids
+
+
+def is_shell(argv):
+    return bool(argv) and os.path.basename(argv[0]).lstrip("-") in SHELLS
+
+
+def terminal_session(win):
+    """What a terminal window is running: (folder, program, shell). `program` is the argv in the
+    foreground, [] for a shell at its prompt; `shell` the shell it runs under, None when the
+    terminal was opened straight onto the program. None when it cannot be read."""
+    if win.get("placeholder"):
+        return None
+    try:
+        kids = proc_children(win["pid"])
+        if len(kids) != 1:
+            return None
+        child = kids[0]
+        argv = proc_argv(child)
+        if not is_shell(argv):
+            return os.readlink(f"/proc/{child}/cwd"), argv, None
+        shell = os.readlink(f"/proc/{child}/exe")
+        # /proc/<pid>/stat after the command name: state ppid pgrp session tty_nr tpgid …
+        fields = open(f"/proc/{child}/stat").read().rsplit(")", 1)[1].split()
+        foreground = fields[5]
+        if foreground in ("-1", "0", fields[2]):
+            return os.readlink(f"/proc/{child}/cwd"), [], shell
+        try:
+            program = proc_argv(foreground)
+        except OSError:                      # it finished while we were reading
+            program = []
+        if not program or is_shell(program):
+            return os.readlink(f"/proc/{child}/cwd"), [], shell
+        try:
+            folder = os.readlink(f"/proc/{foreground}/cwd")
+        except OSError:
+            # ⚠️ A PROGRAM WITH FILE CAPABILITIES HIDES ITS OWN /proc FROM ITS OWNER — btop carries
+            # cap_perfmon, and reading its cwd is refused even to the user running it (found on a
+            # stock Omarchy VM, 2026-09-20; before this, a terminal running btop recorded nothing
+            # at all). The shell's folder is where it was started, which is the folder wanted.
+            folder = os.readlink(f"/proc/{child}/cwd")
+        return folder, program, shell
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+
+
+def terminal_argv(klass, exe, folder, command):
+    """The command that opens this terminal in `folder`, running `command` (or a shell), for each
+    terminal Omarchy offers. None for any other."""
+    if klass == "foot":
+        return [exe, f"--working-directory={folder}"] + command
+    if klass == "Alacritty":
+        return [exe, "--working-directory", folder] + (["-e"] + command if command else [])
+    if klass == "kitty":
+        return [exe, "--directory", folder] + command
+    if klass == "com.mitchellh.ghostty":
+        return [exe, f"--working-directory={folder}"] + (["-e"] + command if command else [])
+    return None
+
+
+def terminal_record(win):
+    """How a terminal window comes back, for its recording, and what the HYPER+S card says about
+    it. A shell at its prompt gets `launch`: HYPER+R reopens it in its folder by itself. A
+    program gets `offer` instead — the placeholder's Run and new-terminal buttons — because
+    running a program again is Dave's call each time (2026-09-19: "Instead of auto launch, we
+    load that placeholder with a button to say run this thing X or open a new terminal or remove
+    this"). {} when the terminal cannot be read."""
+    session = terminal_session(win)
+    if not session:
+        return {}
+    folder, program, shell = session
+    try:
+        exe = os.readlink(f"/proc/{win['pid']}/exe")
+    except OSError:
+        return {}
+    here = terminal_argv(win["class"], exe, folder, [])
+    if not here:
+        return {}
+    where = ("your home folder" if folder == HOME
+             else "~" + folder[len(HOME):] if folder.startswith(HOME + "/") else folder)
+    if not program:
+        return {"launch": "uwsm-app -- " + shlex.join(here), "said": f"reopen a terminal in {where}"}
+    command = [shell, "-ic", f"{shlex.join(program)}; exec {shlex.quote(shell)}"] if shell else program
+    shown = shlex.join(program)
+    shown = shown if len(shown) <= 40 else shown[:39] + "…"
+    return {"offer": {"run": "uwsm-app -- " + shlex.join(terminal_argv(win["class"], exe, folder, command)),
+                      "here": "uwsm-app -- " + shlex.join(here), "program": shown, "where": where},
+            "said": f"offer to run {shown} in {where} again"}
+
+
+def place_new(is_it, ws, timeout, floating=False):
+    """Wait for the first client `is_it` accepts, then put it on `ws` — tiled, or left floating
+    for a window a recording holds as floating (`restore_floats` then places it). None on
+    timeout."""
+    found = []
+
+    def mapped():
+        for c in clients():
+            if is_it(c) and c.get("mapped", True):
+                found.append(c)
+                return True
+        return False
+
+    if not wait_until(mapped, timeout):
+        return None
+    c = found[0]
+    # A window rule can land it on another desk (its own), and Chrome can hand it over floating.
+    if c["workspace"]["id"] != ws:
+        dispatch(f'hl.dsp.window.move({{ workspace = "{ws}", follow = false, window = "address:{c["address"]}" }})')
+    if floating:
+        if not c["floating"]:
+            dispatch(f'hl.dsp.window.float({{ action = "enable", window = "address:{c["address"]}" }})')
+        wait_until(lambda: any(live["address"] == c["address"] and live["floating"] for live in on_ws(ws)), 2.0)
+        return next((live for live in on_ws(ws) if live["address"] == c["address"]), c)
+    if c["floating"]:
+        dispatch(f'hl.dsp.window.float({{ action = "disable", window = "address:{c["address"]}" }})')
+    wait_until(lambda: is_tiled(c["address"], ws), 2.0)
+    return c
+
+
+def rebuild(ws, steps, assigned):
+    """Walk the opening order. A window that is here is floated with the rest first and tiled back
+    at its step; one that is missing is launched at its step and waited for. Either way dwindle
+    places it beside the focused window on the preselected side, and it is never moved again.
+    A missing window Reptile has no way to start gets a placeholder at its step.
+
+    Returns (opened, failed, unplaced, leftovers_retiled): `unplaced` are the classes that had
+    no way to start and got no placeholder either."""
+    present = tiled_on(ws)
+    for c in present:
+        dispatch(f'hl.dsp.window.float({{ action = "enable", window = "address:{c["address"]}" }})')
+    if present:
+        wait_until(lambda: not tiled_on(ws), 2.0)
+
+    addr, opened, failed, unplaced = {}, [], [], []
+    usual_ratio = default_split_ratio()
+    try:
+        for i, s in enumerate(steps):
+            klass = s["win"]["class"]
+            if s["after"] is not None and s["after"] in addr:
+                # The size is decided BEFORE the window exists: dwindle creates the split with
+                # this ratio, so the window appears at its recorded share and never moves.
+                share = s.get("share")
+                set_default_split_ratio(2 * share if share is not None else usual_ratio)
+                dispatch(f'hl.dsp.focus({{ window = "address:{addr[s["after"]]}" }})')
+                dispatch(f'hl.dsp.layout("preselect {s["side"]}")')
+            c = assigned.get(i)
+            if c:
+                dispatch(f'hl.dsp.window.float({{ action = "disable", window = "address:{c["address"]}" }})')
+                wait_until(lambda: is_tiled(c["address"], ws), 2.0)
+                addr[i] = c["address"]
+                continue
+            cmd = launcher_for(klass, ws) or s["win"].get("launch")
+            if cmd:
+                c = open_window(klass, cmd, ws)
+            else:
+                c = open_placeholder(ws, s["win"])
+            if not c:
+                (failed if cmd else unplaced).append(klass)
+                # Disarm the preselect, or the next window Dave opens by hand would inherit it.
+                dispatch('hl.dsp.layout("preselect x")')
+                continue
+            addr[i] = c["address"]
+            if cmd:
+                opened.append(klass)
+
+        # Whatever was tiled here and is in no step (a seat kept by NEVER_CLOSE) goes back into
+        # the tree at the end rather than being left floating.
+        set_default_split_ratio(usual_ratio)
+        leftovers = [c for c in present if c["address"] not in addr.values()]
+        for c in leftovers:
+            dispatch(f'hl.dsp.window.float({{ action = "disable", window = "address:{c["address"]}" }})')
+    finally:
+        # Whatever happened, the next window Dave opens by hand gets dwindle's usual split.
+        set_default_split_ratio(usual_ratio)
+    return opened, failed, unplaced, len(leftovers)
+
+
+def stand_on(ws):
+    """⚠️ STAND ON THE DESK BEFORE MOVING ANYTHING ON IT. A launched app with no window rule (Files
+    is the one that matters) lands on whatever workspace is focused, dwindle splits the FOCUSED
+    window, `preselect` applies to the desk that is up, and a resize acts on the active window.
+    From HYPER+R this is true by definition; it is not for `ws-layout restore <n>` typed from
+    elsewhere, nor for the login pass."""
+    if active_ws() != ws:
+        dispatch(f'hl.dsp.focus({{ workspace = "{ws}" }})')
+        wait_until(lambda: active_ws() == ws, 2.0)
+
+
+def restore(ws):
+    path = snap_path(ws)
+    if not os.path.exists(path):
+        print(f"ws{ws}: no recording yet — press HYPER+S to make one")
+        if ANNOUNCE:
+            card(f"Reptile has no recording of workspace {ws}")
+            card_down()
+        return 1
+    record = json.load(open(path))
+    name = record.get("name", ws)
+    desk = desk_words(ws, name)
+
+    # The card goes up at once for a HYPER+R, and on the login pass only once the desk turns
+    # out to need something opened, closed or resized; either way it comes down at the end.
+    shown = [False]
+
+    def say(message=None, reason=None):
+        shown[0] = True
+        card(message or f"Reptile is laying out {desk}", reason)
+
+    if ANNOUNCE:
+        say()
+    try:
+        return _restore(ws, name, steps_of(record), record.get("floating") or [], desk, say)
+    finally:
+        if shown[0]:
+            card_down()
+
+
+def _restore(ws, name, steps, floats, desk, say):
+    # Everything up to the first thing that must MOVE is done from wherever Dave is standing:
+    # closing works by address, and reading the desk is only `hyprctl clients`. The login pass
+    # walks every recorded desk, and until 2026-09-03 it switched to each one first — an empty
+    # recording, or a desk already as saved, still flashed past (Dave: "that feels like something
+    # we can skip"). Now a desk is only shown when something on it has to open or move.
+
+    # 1. Close anything the recording does not have — never a seat's terminal. A recorded
+    #    floating window counts towards what the desk may keep, or closing would undo the
+    #    placing that follows.
+    need = Counter(s["win"]["class"] for s in steps) + Counter(f["class"] for f in floats)
+    closed = close_extras(ws, need)
+    if closed:
+        say()
+
+    if not steps:
+        opened, unopenable, moved = restore_floats(ws, floats, say)
+        bits = ["empty desk restored" if not floats else f"{len(floats) - len(unopenable)} floating in place"]
+        if opened:
+            bits.append(f"{len(opened)} opened")
+        if closed:
+            bits.append(f"{closed} closed")
+        print(f"ws{ws} ({name}): " + ", ".join(bits))
+        if unopenable and ANNOUNCE:
+            say(*not_back_card(desk, unopenable, []))
+        return 0 if not unopenable else 1
+
+    # 2. Match the recording's windows to the desk's. A recorded window that is neither here nor
+    #    openable (a terminal: see `launcher_for`) gets a placeholder in its place: why it is
+    #    missing, and a way to open an app there (`open_placeholder`). The login pass puts them up
+    #    too (Dave, 2026-09-19); until then it dropped such a window and closed the desk over it.
+    #    ⚠️ THE LIVE LAUNCHER WINS OVER THE RECORDED ONE. A recording stores the launch command as
+    #    it stood the day it was taken, so changing LAUNCHERS here would otherwise do nothing to a
+    #    desk already recorded (2026-08-20: the three admin sites kept coming back out of ws3.json).
+    #    The stored string is only the fallback for a class no longer in the table at all.
+    live = tiled_on(ws)
+    assigned = assign(steps, live)
+    unopenable = {id(s["win"]) for i, s in enumerate(steps)
+                  if i not in assigned and not (launcher_for(s["win"]["class"], ws) or s["win"].get("launch"))}
+    for s in steps:
+        if id(s["win"]) in unopenable:
+            print(f"  ⚠️ {s['win']['class']} is missing and there is no launch command for it")
+
+    # 3. Already arranged as recorded? Then nothing is rebuilt; a split dragged since the
+    #    recording gets one resize back to its share, and everything else stays put.
+    if len(assigned) == len(steps) and same_arrangement(live, steps, assigned):
+        moved, focused = 0, None
+        if size_gaps(live, steps, assigned):
+            say()
+            stand_on(ws)
+            focused = json.loads(sh("hyprctl activewindow -j") or "{}").get("address")
+            moved = nudge_sizes(ws, steps, assigned)
+        if moved and focused and any(c["address"] == focused for c in on_ws(ws)):
+            dispatch(f'hl.dsp.focus({{ window = "address:{focused}" }})')
+        opened, unopenable, floated = restore_floats(ws, floats, say)
+        bits = ["already as saved" if not (opened or floated) else "put back"]
+        if moved:
+            bits.append(f"{moved} split{'s' if moved != 1 else ''} resized")
+        if opened:
+            bits.append(f"{len(opened)} floating opened")
+        if floated:
+            bits.append(f"{floated} floating placed")
+        if closed:
+            bits.append(f"{closed} closed")
+        print(f"ws{ws} ({name}): " + ", ".join(bits))
+        if unopenable and ANNOUNCE:
+            say(*not_back_card(desk, unopenable, []))
+        return 0 if not unopenable else 1
+
+    # 4. Open and arrange in the recorded order, under the card.
+    say()
+    stand_on(ws)
+    opened, failed, unplaced, leftovers = rebuild(ws, steps, assigned)
+    # The floating windows go on top once the tree is built, each at its own rectangle.
+    floats_opened, floats_unopenable, floated = restore_floats(ws, floats, say)
+    unplaced += floats_unopenable
+    # Chrome from cold can bring last session's windows with it — close those too.
+    closed += close_extras(ws, need)
+
+    placed = len(steps) + len(floats) - len(failed) - len(unplaced)
+    stood_in = len(unopenable) - len(unplaced)
+    bits = [f"{placed} window{'s' if placed != 1 else ''} in place"]
+    if opened or floats_opened:
+        bits.append(f"{len(opened) + len(floats_opened)} opened")
+    if floated:
+        bits.append(f"{floated} floating placed")
+    if stood_in:
+        bits.append(f"{stood_in} placeholder{'s' if stood_in != 1 else ''}")
+    if closed:
+        bits.append(f"{closed} closed")
+    if failed:
+        bits.append("could not open: " + ", ".join(failed))
+    if unplaced:
+        bits.append("no placeholder for: " + ", ".join(unplaced))
+    print(f"ws{ws} ({name}): " + ", ".join(bits))
+    # A placeholder says for itself why its window is missing; the card speaks for the rest.
+    if (unplaced or failed) and ANNOUNCE:
+        say(*not_back_card(desk, unplaced, failed))
+    return 0 if not (failed or unplaced) else 1
+
+
+def placeholder_client(token):
+    return next((c for c in clients() if c.get("placeholder") == token), None)
+
+
+def close_window(address):
+    dispatch(f'hl.dsp.window.close({{ window = "address:{address}" }})')
+    wait_until(lambda: all(c["address"] != address for c in clients()), 3.0)
+
+
+def fill(token, launch, match, name):
+    """Open an app where a placeholder stands. The app opens beside the placeholder — dwindle
+    splits the focused window's cell — and the placeholder then closes, so the app has the whole
+    cell. The recording is not touched: it changes when Dave records the desk (his call,
+    2026-09-19). Prints why when it fails; the placeholder shows that."""
+    stand_in = placeholder_client(token)
+    if not stand_in:
+        print("This placeholder is no longer on a desk.")
+        return 1
+    ws = stand_in["workspace"]["id"]
+    was_floating = stand_in["floating"]
+    where = {"at": stand_in["at"], "size": stand_in["size"]}
+    stand_on(ws)
+    dispatch(f'hl.dsp.focus({{ window = "address:{stand_in["address"]}" }})')
+    before = {c["address"] for c in clients()}
+    subprocess.Popen(f"setsid {launch} >/dev/null 2>&1 &", shell=True)
+    c = place_new(lambda c: c["address"] not in before and not c.get("placeholder")
+                  and (not match or class_fits(c["class"], match)), ws, OPEN_TIMEOUT,
+                  floating=was_floating)
+    if not c:
+        print(f"{name[:1].upper() + name[1:]} did not open a new window within {round(OPEN_TIMEOUT)} seconds. "
+              "If it is already open on another desk, it may have gone there instead.")
+        return 1
+    if was_floating:
+        # A floating placeholder hands over its rectangle; a tiled one hands over its cell by
+        # closing, which is dwindle's own doing.
+        g = desk_geometry()
+        put_float(c, {"frac": [(where["at"][0] - g["x"]) / g["w"], (where["at"][1] - g["y"]) / g["h"],
+                               where["size"][0] / g["w"], where["size"][1] / g["h"]]}, g)
+    close_window(stand_in["address"])
+    return 0
+
+
+def forget(token):
+    """Take the window a placeholder stands in for out of its desk's recording, then close the
+    placeholder — the desk closes over the gap, and the next HYPER+R no longer expects it."""
+    stand_in = placeholder_client(token)
+    if not stand_in:
+        print("This placeholder is no longer on a desk.")
+        return 1
+    ws = stand_in["workspace"]["id"]
+    path = snap_path(ws)
+    record = json.load(open(path)) if os.path.exists(path) else None
+    if record is None:
+        close_window(stand_in["address"])
+        return 0
+    floats = record.get("floating") or []
+    tree = tree_from_steps(steps_of(record))
+    if stand_in["floating"]:
+        # It stands in for a floating window, so it comes out of that list, not out of the tree.
+        found = match_floats(floats, [stand_in])
+        floats = [f for i, f in enumerate(floats) if i not in found]
+    else:
+        leaves = [n[1] for n in _leaf_nodes(tree)]
+        same_class = [w for w in leaves if w["class"] == stand_in["class"]]
+        target = next((w for w in same_class if str(w.get("title", ""))[:60] == stand_in["title"][:60]),
+                      same_class[0] if same_class else None)
+        if target is not None:
+            tree = prune(tree, lambda w: w is not target)
+    write_record(record_from_steps(ws, record.get("name", ws), steps_from_tree(tree) if tree else [], floats))
+    close_window(stand_in["address"])
+    return 0
+
+
+def kind_of(klass):
+    """How the card counts a window: "terminal", "unnamed" for an app with no name in LABELS or
+    HOSTS, or the app's own name."""
+    label = label_for(klass)
+    if label == "Terminal":
+        return "terminal"
+    if klass not in LABELS and label == klass:
+        return "unnamed"
+    return label
+
+
+def window_names(classes):
+    """What the card calls some windows: "the terminal", "Files", "Chrome and 2 terminals". An app
+    with no name is "a window" — the card never shows Dave a window class."""
+    parts = []
+    for kind, n in Counter(kind_of(k) for k in classes).items():
+        if kind == "terminal":
+            parts.append("the terminal" if n == 1 else f"{n} terminals")
+        elif kind == "unnamed":
+            parts.append("a window" if n == 1 else f"{n} windows")
+        else:
+            parts.append(kind if n == 1 else f"{n} {kind} windows")
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def cannot_start(classes):
+    """Why Reptile has no way to start these windows, in a sentence or two."""
+    kinds = [kind_of(k) for k in classes]
+    named = [k for k in classes if kind_of(k) not in ("terminal", "unnamed")]
+    unnamed = kinds.count("unnamed")
+    reasons = []
+    if "terminal" in kinds:
+        reasons.append("A terminal cannot be reopened, because Reptile cannot tell what was running in it.")
+    if named:
+        reasons.append(f"Reptile does not know how to start {window_names(named)}.")
+    elif unnamed:
+        reasons.append("Reptile does not know how to start " + ("that app." if unnamed == 1 else "those apps."))
+    return " ".join(reasons)
+
+
+def not_back_card(desk, skipped, failed):
+    """The card for a restore that left windows out: which ones, then why and what Dave can do.
+    `skipped` are the classes Reptile has no way to start; `failed` the ones it started that put
+    up no window in time."""
+    reasons = [cannot_start(skipped)] if skipped else []
+    if failed:
+        names = window_names(failed)
+        reasons.append(f"{names[0].upper() + names[1:]} did not open a window within {round(OPEN_TIMEOUT)} seconds. "
+                       f"If {'it is' if len(failed) == 1 else 'they are'} already open on another desk, "
+                       f"{'it' if len(failed) == 1 else 'they'} may have gone there instead.")
+    it = "it" if len(skipped) + len(failed) == 1 else "them"
+    if not failed:
+        reasons.append(f"Open {it} yourself, or remove {it} from this desk in the Reptile panel.")
+    elif not skipped:
+        reasons.append(f"Try again, or open {it} yourself.")
+    else:
+        reasons.append(f"Open {it} yourself.")
+    return f"Reptile could not reopen {window_names(skipped + failed)} on {desk}", " ".join(reasons)
+
+
+def show(ws):
+    path = snap_path(ws)
+    if not os.path.exists(path):
+        print(f"ws{ws}: no recording")
+        return 1
+    record = json.load(open(path))
+    steps = steps_of(record)
+    fmt = record.get("format", 1)
+    print(f"ws{ws} ({record.get('name', ws)}): {len(steps)} windows, opened in this order"
+          + (" (old recording — order read off its rectangles)" if fmt < 2 else ""))
+    print(describe(steps) if steps else "  (empty)")
+    floats = record.get("floating") or []
+    if floats:
+        print(f"  floating: " + ", ".join(f"{label_for(f['class'])}" for f in floats))
+    live = tiled_on(ws)
+    assigned = assign(steps, live)
+    float_found = match_floats(floats, floating_on(ws))
+    missing = [s["win"]["class"] for i, s in enumerate(steps) if i not in assigned]
+    missing += [f["class"] for i, f in enumerate(floats) if i not in float_found]
+    extra = [c["class"] for c in on_ws(ws)
+             if c["address"] not in ({a["address"] for a in assigned.values()}
+                                     | {a["address"] for a in float_found.values()})]
+    if not missing and not extra and same_arrangement(live, steps, assigned):
+        off = size_gaps(live, steps, assigned)
+        print("desk now: as saved" + (f", but {len(off)} split{'s' if len(off) != 1 else ''} off size: "
+                                      + ", ".join(f"{i + 1}: {round(cur * 100)}% not {round(want * 100)}%" for i, want, cur in off)
+                                      if off else ""))
+    elif not missing and not extra:
+        print("desk now: the same windows, arranged differently")
+    else:
+        print("desk now: differs"
+              + (f"; missing: {', '.join(missing)}" if missing else "")
+              + (f"; not in the recording (restore closes them): {', '.join(extra)}" if extra else ""))
+    return 0
+
+
+# ----------------------------------------------------------------- columns
+# HYPER+3 is the one place that still lays a desk out to exact sizes: equal columns need every
+# split nudged, which is exactly the rebuild restore gave up on 2026-09-03. It touches only what
+# is already on the desk — nothing is opened or closed.
+
+def build(node, addr_of):
+    """Replay the tree with preselect: each step splits the ONE window currently filling a cell."""
+    if node[0] == "leaf":
+        return
+    kind, a, b = node
+    anchor = addr_of[id(first_leaf(a))]
+    newcomer = addr_of[id(first_leaf(b))]
+    dispatch(f'hl.dsp.focus({{ window = "address:{anchor}" }})')
+    dispatch(f'hl.dsp.layout("preselect {"r" if kind == "v" else "d"}")')
+    dispatch(f'hl.dsp.window.float({{ action = "disable", window = "address:{newcomer}" }})')
+    time.sleep(0.25)
+    build(a, addr_of)
+    build(b, addr_of)
+
+
+def live_size(addr, axis):
+    for c in clients():
+        if c["address"] == addr:
+            return c["size"][axis]
+    return None
+
+
+def apply_ratios(node, addr_of):
+    """Nudge each split to the asked-for proportions. Resize is a delta on the ACTIVE window, so
+    focus the first leaf of the left/top side and push it to the width the rectangles ask for.
+    ⚠️ EXACT, NOT "CLOSE ENOUGH": stopping within a dozen pixels once gave thirds of 836 / 834 /
+    838, which Dave noticed. `columns` runs this twice because correcting an outer split changes
+    what the splits inside it inherit."""
+    if node[0] == "leaf":
+        return
+    kind, a, b = node
+    leaf = first_leaf(a)
+    axis = 0 if kind == "v" else 1
+    a_rects = leaves(a)
+    want = max(r["at"][axis] + r["size"][axis] for r in a_rects) - min(r["at"][axis] for r in a_rects)
+    addr = addr_of[id(leaf)]
+    cur = live_size(addr, axis)
+    if cur is not None and abs(cur - want) > 0:
+        dx, dy = (want - cur, 0) if axis == 0 else (0, want - cur)
+        dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})')
+        dispatch(f"hl.dsp.window.resize({{ x = {dx}, y = {dy}, relative = true }})")
+        time.sleep(0.2)
+    apply_ratios(a, addr_of)
+    apply_ratios(b, addr_of)
+
+
+def option_numbers(option):
+    """The numbers on the first line `hyprctl getoption` prints, in the order printed — an int,
+    a float, a vec2's pair, or a gap's four sides."""
+    out = sh(f"hyprctl getoption {option}") or ""
+    first = out.splitlines()[0] if out.strip() else ""
+    value = first.partition(":")[2]      # past the type — "vec2: [1, 1]" has a digit in its name
+    return [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", value)]
+
+
+def css_sides(nums):
+    """A gap as Hyprland prints it, in CSS order: one value is every side, two are top/bottom
+    then left/right, three are top, left/right, bottom, four are top, right, bottom, left."""
+    n = [int(v) for v in nums] or [0]
+    if len(n) == 1:
+        n = n * 4
+    elif len(n) == 2:
+        n = [n[0], n[1], n[0], n[1]]
+    elif len(n) == 3:
+        n = [n[0], n[1], n[2], n[1]]
+    return {"top": n[0], "right": n[1], "bottom": n[2], "left": n[3]}
+
+
+def desk_geometry():
+    """What Hyprland puts around a tiled window, read live so that `columns` and the panel follow
+    the day Dave changes a value: the screen below the bar (`x`, `y` its top-left corner in
+    monitor coordinates, `w`, `h` its size), the outer gap between its edge and the windows, the
+    inner gap between two windows, the border, and the aspect ratio a desk of one window is
+    held to. How Hyprland 0.56 uses them (Space.cpp, WindowTarget.cpp): the layout splits the
+    WORK AREA — the screen below the bar less the outer gap — into cells, and each window then
+    loses the inner gap on every side that meets another cell, nothing on a side that meets the
+    work area's edge. Hyprland's `reserved` is [left, top, right, bottom]; the bar is the 26 at
+    the top. `rounding` is the corner radius windows are drawn with, so the panel can round its
+    blocks by the same share of their size.
+    """
+    mon = (json.loads(sh("hyprctl monitors -j") or "[]") or [{}])[0]
+    scale = mon.get("scale") or 1
+    res = mon.get("reserved") or [0, 0, 0, 0]
+    ratio = option_numbers("layout:single_window_aspect_ratio")
+    tolerance = option_numbers("layout:single_window_aspect_ratio_tolerance")
+    return {
+        "x": res[0], "y": res[1],
+        "w": mon.get("width", 16) / scale - res[0] - res[2],
+        "h": mon.get("height", 9) / scale - res[1] - res[3],
+        "out": css_sides(option_numbers("general:gaps_out")),
+        "in": css_sides(option_numbers("general:gaps_in")),
+        "border": int((option_numbers("general:border_size") or [0])[0]),
+        "rounding": int((option_numbers("decoration:rounding") or [0])[0]),
+        "ratio": (ratio + [0.0, 0.0])[:2],
+        "tolerance": tolerance[0] if tolerance else 0.1,
+    }
+
+
+def usable_area():
+    """The rectangle a tiled window's content may occupy, and the distance between two windows'
+    contents side by side — what `columns` lays out in.
+
+    ⚠️ A WINDOW'S REPORTED POSITION INCLUDES ITS BORDER, which is why the outer margin reads as 12
+    when `gaps_out` is 10 — and why hard-coding 12 would drift the day Dave changes either value.
+    Between two windows there are two borders and two inner gaps, hence 14 from `gaps_in` of 5.
+    """
+    g = desk_geometry()
+    border = g["border"]
+    return (int(g["x"] + g["out"]["left"] + border), int(g["y"] + g["out"]["top"] + border),
+            int(g["x"] + g["w"] - g["out"]["right"] - border),
+            int(g["y"] + g["h"] - g["out"]["bottom"] - border),
+            g["in"]["left"] + g["in"]["right"] + 2 * border)
+
+
+def columns(ws, want=None):
+    """Side by side, equal shares — Dave's HYPER+3 for a desk of three."""
+    wins = by_position(tiled_on(ws))
+    if not wins:
+        print(f"ws{ws}: nothing tiled here")
+        return 1
+    if want and len(wins) != want:
+        print(f"ws{ws}: {len(wins)} tiled windows, not {want} — arranging the {len(wins)} that are here")
+    n = len(wins)
+    x0, y0, x1, y1, inner = usable_area()
+    each = (x1 - x0 - inner * (n - 1)) // n
+    rects, addr_of = [], {}
+    for i, c in enumerate(wins):
+        r = {"at": [x0 + i * (each + inner), y0], "size": [each, y1 - y0], "class": c["class"]}
+        rects.append(r)
+        addr_of[id(r)] = c["address"]
+    dispatch(f'hl.dsp.focus({{ workspace = "{ws}" }})')
+    wait_until(lambda: active_ws() == ws, 2.0)
+    for c in on_ws(ws):
+        dispatch(f'hl.dsp.window.float({{ action = "enable", window = "address:{c["address"]}" }})')
+    wait_until(lambda: not tiled_on(ws), 2.0)
+    tree = split_tree(rects)
+    dispatch(f'hl.dsp.window.float({{ action = "disable", window = "address:{addr_of[id(first_leaf(tree))]}" }})')
+    time.sleep(0.3)
+    build(tree, addr_of)
+    time.sleep(0.4)
+    apply_ratios(tree, addr_of)
+    apply_ratios(tree, addr_of)
+    print(f"ws{ws}: {n} windows side by side, {each}px each")
+    return 0
+
+
+# ------------------------------------------------------------------- panel
+# What the Reptile panel (tinkerbell.reptile, HYPER+L) reads and writes. It never touches a
+# recording itself: every change comes back through `edit`, so the file format has one writer.
+
+# What a window is called on the panel. Classes are what Hyprland reports; nobody wants to read
+# "chrome-calendar.google.com__calendar_r_week-Profile_1" in a box the size of a stamp.
+LABELS = {
+    "chrome-mail.google.com__mail_-Profile_1": "Mail · Webscape",
+    "chrome-calendar.google.com__calendar_r_week-Profile_1": "Calendar · Webscape",
+    "chrome-mail.google.com__mail_-Default": "Mail · Personal",
+    "chrome-calendar.google.com__calendar_r_week-Default": "Calendar · Personal",
+    "chrome-tinkerbell.anotherdave.net__-Default": "Tinkerbell",
+    "chrome-mermaid.ai__app_dashboard-Default": "Mermaid",
+    "com.rtosta.zapzap": "WhatsApp",
+    "bluebubbles": "Messages",
+    "org.gnome.Nautilus": "Files",
+    "google-chrome": "Chrome",
+    "Nxplayer.bin": "NoMachine",
+    "org.remmina.Remmina": "Remmina",
+    "claude-tinkerbell": "Claude · Tinkerbell",
+    "codex-tinkerbell": "Codex · Tinkerbell",
+    "claude-hazel": "Claude · Hazel",
+    "codex-hazel": "Codex · Hazel",
+    "claude-gandalf": "Claude · Gandalf",
+    "codex-gandalf": "Codex · Gandalf",
+    "claude-kirk": "Claude · Kirk",
+    "foot": "Terminal",
+    "Alacritty": "Terminal",
+    "kitty": "Terminal",
+    "com.mitchellh.ghostty": "Terminal",
+    "Tokri": "Tokri",
+    "workout": "Workout",
+}
+# Web apps not in the table above are named by their site.
+HOSTS = {
+    "music.apple.com": "Apple Music", "mail.google.com": "Mail", "calendar.google.com": "Calendar",
+    "claude.ai": "Claude", "chatgpt.com": "ChatGPT", "github.com": "GitHub", "youtube.com": "YouTube",
+    "pushover.net": "Pushover", "x.com": "X", "web.whatsapp.com": "WhatsApp",
+}
+# The order the add picker lists the apps a recording can name.
+APP_ORDER = [
+    "chrome-mail.google.com__mail_-Profile_1", "chrome-calendar.google.com__calendar_r_week-Profile_1",
+    "chrome-mail.google.com__mail_-Default", "chrome-calendar.google.com__calendar_r_week-Default",
+    "com.rtosta.zapzap", "bluebubbles", "org.gnome.Nautilus", "google-chrome", "Nxplayer.bin",
+    "org.remmina.Remmina", "chrome-tinkerbell.anotherdave.net__-Default", "chrome-mermaid.ai__app_dashboard-Default",
+    "claude-tinkerbell", "codex-tinkerbell", "claude-hazel", "codex-hazel", "claude-gandalf", "codex-gandalf",
+    "claude-kirk",
+]
+
+
+def label_for(klass):
+    if klass in LABELS:
+        return LABELS[klass]
+    m = re.match(r"chrome-([^_]+)__", klass)
+    if m:
+        host = m.group(1)
+        if host in HOSTS:
+            return HOSTS[host]
+        parts = [p for p in host.split(".") if p not in ("www", "com", "net", "org", "ie", "app", "io", "ai")]
+        return " ".join(w.capitalize() for w in parts) or host
+    return klass
+
+
+# The board draws every gap this many times its true share of the screen (Dave, 2026-09-12): at
+# true scale a 12-pixel gap is a hair's breadth on a board a quarter of the screen's size, and the
+# point of drawing the gaps is to see them. The outer and inner gaps keep their proportion.
+GAP_EXAGGERATION = 5
+
+
+def picture_geometry(g):
+    """The desk geometry as the board draws it: the gaps GAP_EXAGGERATION times their true size,
+    everything else as measured."""
+    times = lambda sides: {side: v * GAP_EXAGGERATION for side, v in sides.items()}
+    return {**g, "out": times(g["out"]), "in": times(g["in"])}
+
+
+def lone_window_padding(g, work_w, work_h):
+    """How much narrower (or shorter) than the work area Hyprland draws a desk's only window, to
+    hold it to `layout:single_window_aspect_ratio` — Dave's 1:1 on the 5K, so a lone window is a
+    centred square. Hyprland 0.56's own arithmetic (WindowTarget.cpp): the padding is measured
+    against the work area and applied only when half of it exceeds the tolerance's share of that
+    dimension."""
+    rx, ry = g["ratio"]
+    if rx <= 0 or ry <= 0:
+        return 0.0, 0.0
+    requested, original = rx / ry, work_w / work_h
+    if requested > original:
+        pad = work_h - work_w / requested
+        return (0.0, pad) if pad / 2 > g["tolerance"] * work_h else (0.0, 0.0)
+    if requested < original:
+        pad = work_w - work_h * requested
+        return (pad, 0.0) if pad / 2 > g["tolerance"] * work_w else (0.0, 0.0)
+    return 0.0, 0.0
+
+
+def unit_layout(tree, g):
+    """Every window's cell and block inside the unit square — the screen below the bar — and every
+    split line, drawn from the tree's shares the way Hyprland draws the desk (`desk_geometry`).
+    A window's CELL is its share of the work area; its BLOCK is what Dave sees there: the cell
+    less the inner gap on every side that meets another cell, and a lone window held to the
+    single-window aspect ratio and centred. Worked in the screen's own pixels, then scaled to the
+    unit square. Keyed by id() of the window / split node."""
+    W, H, out, inner = g["w"], g["h"], g["out"], g["in"]
+    work_w, work_h = W - out["left"] - out["right"], H - out["top"] - out["bottom"]
+    pad_w, pad_h = lone_window_padding(g, work_w, work_h) if tree and tree[0] == "leaf" else (0.0, 0.0)
+    rects, blocks, lines = {}, {}, {}
+
+    def unit(x, y, w, h):
+        return (x / W, y / H, w / W, h / H)
+
+    def walk(node, x, y, w, h, meets_edge):
+        if node[0] == "leaf":
+            gap = {side: 0 if meets_edge[side] else inner[side] for side in meets_edge}
+            rects[id(node[1])] = unit(x, y, w, h)
+            blocks[id(node[1])] = unit(x + gap["left"] + pad_w / 2, y + gap["top"] + pad_h / 2,
+                                       w - gap["left"] - gap["right"] - pad_w,
+                                       h - gap["top"] - gap["bottom"] - pad_h)
+            return
+        kind, a, b, share = node
+        s = share if share is not None else 0.5
+        cx, cy, cw, ch = unit(x, y, w, h)
+        if kind == "v":
+            lines[id(node)] = {"axis": "v", "pos": (x + w * s) / W, "cx": cx, "cy": cy, "cw": cw, "ch": ch}
+            walk(a, x, y, w * s, h, dict(meets_edge, right=False))
+            walk(b, x + w * s, y, w * (1 - s), h, dict(meets_edge, left=False))
+        else:
+            lines[id(node)] = {"axis": "h", "pos": (y + h * s) / H, "cx": cx, "cy": cy, "cw": cw, "ch": ch}
+            walk(a, x, y, w, h * s, dict(meets_edge, bottom=False))
+            walk(b, x, y + h * s, w, h * (1 - s), dict(meets_edge, top=False))
+
+    if tree:
+        walk(tree, out["left"], out["top"], work_w, work_h,
+             {"left": True, "top": True, "right": True, "bottom": True})
+    return rects, blocks, lines
+
+
+def desk_model(ws, name, all_clients, g):
+    path = snap_path(ws)
+    record = json.load(open(path)) if os.path.exists(path) else None
+    steps = steps_of(record) if record else []
+    tree = tree_from_steps(steps)
+    if tree:
+        steps = steps_from_tree(tree)      # so every split step carries its node
+    rects, blocks, lines = unit_layout(tree, g)
+    on_desk = [c for c in all_clients if c["workspace"]["id"] == ws]
+    live = [c for c in on_desk if not c["floating"]]
+    assigned = assign(steps, live)
+    floats = (record or {}).get("floating") or []
+    tiled_classes = {c["class"] for c in live}
+    live_floats = by_position([c for c in on_desk if c["floating"] and c.get("mapped", True)
+                               and c["class"] not in tiled_classes and not never_close(c["class"])])
+    float_found = match_floats(floats, live_floats)
+    windows, splits = [], []
+    for i, s in enumerate(steps):
+        x, y, w, h = rects[id(s["win"])]
+        windows.append({
+            "i": i, "class": s["win"]["class"], "label": label_for(s["win"]["class"]),
+            "title": str(s["win"].get("title", "")), "after": s["after"], "side": s["side"],
+            "share": s.get("share"), "open": i in assigned,
+            "launchable": bool(launcher_for(s["win"]["class"], ws) or s["win"].get("launch")),
+            "offer": (s["win"].get("offer") or {}).get("program", ""),
+            "x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4),
+            "block": [round(v, 4) for v in blocks[id(s["win"])]],
+        })
+        if s.get("node") is not None and id(s["node"]) in lines:
+            ln = lines[id(s["node"])]
+            splits.append(dict(ln, i=i, pos=round(ln["pos"], 4)))
+    floating = []
+    for i, rec in enumerate(floats):
+        fx, fy, fw, fh = rec.get("frac") or [0.25, 0.25, 0.5, 0.5]
+        floating.append({
+            "i": i, "class": rec["class"], "label": label_for(rec["class"]),
+            "title": str(rec.get("title", "")), "open": i in float_found,
+            "launchable": bool(launcher_for(rec["class"], ws) or rec.get("launch")),
+            # In the same unit square as the tiled blocks: the screen below the bar.
+            "x": round(fx, 4), "y": round(fy, 4), "w": round(fw, 4), "h": round(fh, 4),
+        })
+    taken = {c["address"] for c in assigned.values()} | {c["address"] for c in float_found.values()}
+    extra = [{"class": c["class"], "label": label_for(c["class"]), "title": c["title"]}
+             for c in by_position(on_desk) if c["address"] not in taken and not never_close(c["class"])]
+    return {"ws": ws, "name": name, "recorded": record is not None, "windows": windows,
+            "splits": splits, "floating": floating, "extra": extra}
+
+
+def desks_json():
+    wss = sorted((w for w in json.loads(sh("hyprctl workspaces -j") or "[]") if w["id"] >= 1),
+                 key=lambda w: w["id"])
+    all_clients = clients()
+    g = desk_geometry()
+    picture = picture_geometry(g)
+    names = {w_["id"]: (w_["name"] if w_["name"] and w_["name"] != str(w_["id"]) else f"Desk {w_['id']}") for w_ in wss}
+    # Recorded desks that Hyprland has forgotten (a persistent desk it dropped) still show.
+    for f in os.listdir(SNAP_DIR) if os.path.isdir(SNAP_DIR) else []:
+        m = re.match(r"ws(\d+)\.json$", f)
+        if m and int(m.group(1)) not in names:
+            names[int(m.group(1))] = json.load(open(os.path.join(SNAP_DIR, f))).get("name", m.group(1))
+    apps = [{"class": k, "label": label_for(k)} for k in APP_ORDER]
+    return {
+        "active": active_ws(),
+        # The screen below the bar in logical pixels — the board's proportions, and the scale
+        # that turns a window's corner radius into a block's.
+        "screen": [g["w"], g["h"]],
+        "rounding": g["rounding"],
+        "desks": [desk_model(n, names[n], all_clients, picture) for n in sorted(names)],
+        "apps": apps,
+    }
+
+
+def edit(ws, op, args):
+    """One change to a desk's recording, then the whole model again for the panel to redraw."""
+    path = snap_path(ws)
+    record = json.load(open(path)) if os.path.exists(path) else None
+    name = record.get("name") if record else ws_name(ws)
+    floats = (record or {}).get("floating") or []
+    steps = steps_of(record) if record else []
+    tree = tree_from_steps(steps)
+    steps = steps_from_tree(tree) if tree else []
+    leaves_by_step = [s["win"] for s in steps]
+
+    def leaf_node(i):
+        return next(n for n in _leaf_nodes(tree) if n[1] is leaves_by_step[i])
+
+    if op == "remove":
+        i = int(args[0])
+        tree = prune(tree, lambda w: w is not leaves_by_step[i]) if tree else None
+    elif op == "add":
+        klass = args[0]
+        win = {"class": klass, "title": args[3] if len(args) > 3 else ""}
+        if not tree:
+            tree = ["leaf", win]
+        else:
+            after = int(args[1]) if len(args) > 1 and args[1] != "" else len(steps) - 1
+            side = args[2] if len(args) > 2 and args[2] in ("r", "l", "d", "u") else "r"
+            anchor = leaf_node(after)
+            theirs, mine = ["leaf", anchor[1]], ["leaf", win]
+            anchor[:] = ["v" if side in ("r", "l") else "h",
+                         theirs if side in ("r", "d") else mine,
+                         mine if side in ("r", "d") else theirs, 0.5]
+    elif op == "swap":
+        i, j = int(args[0]), int(args[1])
+        a, b = leaf_node(i), leaf_node(j)
+        a[1], b[1] = b[1], a[1]
+    elif op == "share":
+        i, value = int(args[0]), float(args[1])
+        node = steps[i].get("node")
+        if node is not None:
+            node[3] = max(0.1, min(0.9, value))
+    elif op == "unfloat":
+        # A floating window has no place in the tree, so the panel's × on one comes through here.
+        i = int(args[0])
+        if 0 <= i < len(floats):
+            floats = floats[:i] + floats[i + 1:]
+    else:
+        raise SystemExit(f"unknown edit: {op}")
+    new_steps = steps_from_tree(tree) if tree else []
+    write_record(record_from_steps(ws, name, new_steps, floats))
+    return 0
+
+
+def _leaf_nodes(node):
+    if node is None:
+        return []
+    return [node] if node[0] == "leaf" else _leaf_nodes(node[1]) + _leaf_nodes(node[2])
+
+
+def main():
+    global ANNOUNCE
+    if "--quiet" in sys.argv:
+        ANNOUNCE = False
+        sys.argv = [a for a in sys.argv if a != "--quiet"]
+    if len(sys.argv) < 2 or sys.argv[1] not in ("snapshot", "restore", "show", "columns", "desks", "edit",
+                                                "fill", "forget"):
+        print(__doc__)
+        return 2
+    if sys.argv[1] == "fill" and len(sys.argv) == 6:
+        return fill(*sys.argv[2:6])
+    if sys.argv[1] == "forget" and len(sys.argv) == 3:
+        return forget(sys.argv[2])
+    if sys.argv[1] in ("fill", "forget"):
+        print(__doc__)
+        return 2
+    if sys.argv[1] == "desks":
+        print(json.dumps(desks_json()))
+        return 0
+    if sys.argv[1] == "edit":
+        edit(int(sys.argv[2]), sys.argv[3], sys.argv[4:])
+        print(json.dumps(desks_json()))
+        return 0
+    if sys.argv[1] == "columns":
+        want = int(sys.argv[2]) if len(sys.argv) > 2 else None
+        return columns(active_ws(), want)
+    ws = int(sys.argv[2]) if len(sys.argv) > 2 else active_ws()
+    return {"snapshot": take_snapshot, "restore": restore, "show": show}[sys.argv[1]](ws)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
