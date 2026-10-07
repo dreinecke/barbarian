@@ -268,7 +268,7 @@ Panel {
   property double layingSince: 0
 
   function laying(message) {
-    layingMessage = String(message || "Reptile is laying out your workspace")
+    layingMessage = String(message || "Barbarian is laying out your workspace")
     layingReason = ""
     layingOpen = true
     layingSince = Date.now()
@@ -428,7 +428,7 @@ Panel {
   // placeholder, so the app takes the cell; that never changes the recording — HYPER+S does
   // (Dave's call). Remove runs `ws-layout forget`, which does.
   //
-  // ⚠️ THE TITLE IS HOW THE ENGINE KNOWS IT: "Reptile · missing <class> · <token> · <title>".
+  // ⚠️ THE TITLE IS HOW THE ENGINE KNOWS IT: "Barbarian · missing <class> · <token> · <title>".
   // ws-layout reads that back and treats the placeholder as the window it stands in for, so the
   // next HYPER+R leaves it be and HYPER+S records the terminal, not the shell. Change the shape
   // here and PLACEHOLDER_TITLE there together.
@@ -707,7 +707,7 @@ Panel {
       required property string reason
       required property string name
       required property string actionsJson
-      title: "Reptile · missing " + klass + " · " + token + (recordedTitle ? " · " + recordedTitle : "")
+      title: "Barbarian · missing " + klass + " · " + token + (recordedTitle ? " · " + recordedTitle : "")
       color: Color.background
       implicitWidth: 720
       implicitHeight: 540

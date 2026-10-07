@@ -264,7 +264,7 @@ def dispatch(lua):
 # the desk alone, HYPER+S records the terminal, not the shell — and close_extras closes a
 # placeholder before the real window it would otherwise be counted against.
 PLACEHOLDER_CLASS = "org.quickshell"
-PLACEHOLDER_TITLE = re.compile(r"^Reptile · missing (\S+) · ([0-9a-f]{6})(?: · (.*))?$")
+PLACEHOLDER_TITLE = re.compile(r"^Barbarian · missing (\S+) · ([0-9a-f]{6})(?: · (.*))?$")
 # The panel puts a placeholder up in well under a second; this only stops a panel too old to
 # know about placeholders from holding the restore up.
 PLACEHOLDER_TIMEOUT = 5.0
@@ -684,11 +684,11 @@ def take_snapshot(ws):
         running = terminals_will(runs)
         if unknown:
             it = "it" if len(unknown) == 1 else "them"
-            card(f"Reptile recorded {desk_words(ws, name)}, but cannot reopen {window_names(unknown)}",
-                 f"{cannot_start(unknown)} If you close {it}, Reptile cannot bring {it} back."
+            card(f"Barbarian recorded {desk_words(ws, name)}, but cannot reopen {window_names(unknown)}",
+                 f"{cannot_start(unknown)} If you close {it}, Barbarian cannot bring {it} back."
                  + (f" {running}" if running else ""))
         else:
-            card(f"Reptile recorded {desk_words(ws, name)}", running)
+            card(f"Barbarian recorded {desk_words(ws, name)}", running)
         card_down()
     return 0
 
@@ -883,14 +883,14 @@ def open_placeholder(ws, win, floating=False):
     actions = []
     if offer:
         headline = f"This terminal was running {offer['program']} in {offer['where']}"
-        reason = ("Reptile asks before running a program again, so a command that was only meant "
+        reason = ("Barbarian asks before running a program again, so a command that was only meant "
                   "to run once is never repeated by surprise.")
         actions.append({"kind": "run", "label": f"Run {offer['program']}", "detail": f"in {offer['where']}",
                         "launch": offer["run"], "match": klass, "name": offer["program"]})
         actions.append({"kind": "open", "label": "Open a new terminal", "detail": f"in {offer['where']}",
                         "launch": offer["here"], "match": klass, "name": "a new terminal"})
     else:
-        headline = f"Reptile could not reopen {window_names([klass])}"
+        headline = f"Barbarian could not reopen {window_names([klass])}"
         reason = cannot_start([klass])
         if kind_of(klass) == "terminal":
             actions.append({"kind": "open", "label": "Open a new terminal", "detail": "",
@@ -1130,7 +1130,7 @@ def restore(ws):
     if not os.path.exists(path):
         print(f"ws{ws}: no recording yet — press HYPER+S to make one")
         if ANNOUNCE:
-            card(f"Reptile has no recording of workspace {ws}")
+            card(f"Barbarian has no recording of workspace {ws}")
             card_down()
         return 1
     record = json.load(open(path))
@@ -1143,7 +1143,7 @@ def restore(ws):
 
     def say(message=None, reason=None):
         shown[0] = True
-        card(message or f"Reptile is laying out {desk}", reason)
+        card(message or f"Barbarian is laying out {desk}", reason)
 
     if ANNOUNCE:
         say()
@@ -1360,11 +1360,11 @@ def cannot_start(classes):
     unnamed = kinds.count("unnamed")
     reasons = []
     if "terminal" in kinds:
-        reasons.append("A terminal cannot be reopened, because Reptile cannot tell what was running in it.")
+        reasons.append("A terminal cannot be reopened, because Barbarian cannot tell what was running in it.")
     if named:
-        reasons.append(f"Reptile does not know how to start {window_names(named)}.")
+        reasons.append(f"Barbarian does not know how to start {window_names(named)}.")
     elif unnamed:
-        reasons.append("Reptile does not know how to start " + ("that app." if unnamed == 1 else "those apps."))
+        reasons.append("Barbarian does not know how to start " + ("that app." if unnamed == 1 else "those apps."))
     return " ".join(reasons)
 
 
@@ -1385,7 +1385,7 @@ def not_back_card(desk, skipped, failed):
         reasons.append(f"Try again, or open {it} yourself.")
     else:
         reasons.append(f"Open {it} yourself.")
-    return f"Reptile could not reopen {window_names(skipped + failed)} on {desk}", " ".join(reasons)
+    return f"Barbarian could not reopen {window_names(skipped + failed)} on {desk}", " ".join(reasons)
 
 
 def show(ws):
