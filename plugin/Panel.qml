@@ -90,6 +90,30 @@ Panel {
 
   moduleName: "tinkerbell.arrange"
   ipcTarget: "tinkerbell.arrange"
+  // ⚠️ ONE handler per IPC target — Quickshell keeps the first registered and silently drops
+  // the rest (the merge found this the hard way, 2026-10-07: the layouts panel's handler
+  // registered first as a child and evicted the auto-handler whose toggle HYPER+B calls,
+  // killing both keybinds at once). So the Panel component's own registration is off here,
+  // and the explicit handler below owns the WHOLE surface: this panel's calls, the layouts
+  // panel's key, and the engines' — Reptile.qml defers to it entirely (its manageIpc: false).
+  manageIpc: false
+  IpcHandler {
+    target: "tinkerbell.arrange"
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    // The layouts panel (HYPER+L) and its engines' calls, forwarded through the instance.
+    function layouts(): void { reptilePanel.toggle() }
+    function laying(message: string): string { reptilePanel.laying(message); return "ok" }
+    function explain(message: string, reason: string): string { reptilePanel.explain(message, reason); return "ok" }
+    function laid(): string { reptilePanel.laid(); return "ok" }
+    function placeholder(json: string): string { return reptilePanel.placeholder(json) }
+    function unplace(token: string): string { reptilePanel.unplace(token); return "ok" }
+    function placeholderPreview(json: string): string { return reptilePanel.placeholderPreview(json) }
+    // quick-app pings on every key use, so the tick beside a row appears while the panel
+    // is on screen rather than the next time it is opened.
+    function pinged(name: string): string { reptilePanel.quickAppsLoad(); return "ok" }
+  }
 
   readonly property string applyScript:
     Qt.resolvedUrl("bin/bar-arrange-apply").toString().replace(/^file:\/\//, "")

@@ -301,23 +301,12 @@ Panel {
   Timer { id: layingGuard; interval: 180000; onTriggered: root.layingOpen = false }
   Timer { id: layingHold; onTriggered: { root.layingOpen = false; layingGuard.stop() } }
 
-  // Barbarian's own Panel manages this target's open/close/toggle; this handler adds the
-  // layouts panel's calls alongside them on the same target (manageIpc: false above keeps
-  // this file's Panel root from registering a second set of its own).
+  // No IPC handler of its own: Quickshell keeps ONE handler per target and silently drops
+  // the rest (found the hard way, 2026-10-07, when this file's handler — registered first,
+  // as a child — evicted the auto-handler HYPER+B's toggle lived in). Barbarian's Panel.qml
+  // owns the single handler for everything, including this panel's calls, forwarded through
+  // the reptilePanel instance. manageIpc: false keeps this root from re-registering its own.
   manageIpc: false
-  IpcHandler {
-    target: "tinkerbell.arrange"
-    function layouts(): void { root.toggle() }
-    function laying(message: string): string { root.laying(message); return "ok" }
-    function explain(message: string, reason: string): string { root.explain(message, reason); return "ok" }
-    function laid(): string { root.laid(); return "ok" }
-    function placeholder(json: string): string { return root.placeholder(json) }
-    function unplace(token: string): string { root.unplace(token); return "ok" }
-    function placeholderPreview(json: string): string { return root.placeholderPreview(json) }
-    // quick-app pings here every time one of its keys is used, so the tick beside a row
-    // appears while the panel is on screen rather than the next time it is opened.
-    function pinged(name: string): string { root.quickAppsLoad(); return "ok" }
-  }
 
   TextMetrics {
     id: layingIconMetrics
