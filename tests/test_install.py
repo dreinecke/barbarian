@@ -39,6 +39,9 @@ class Install(unittest.TestCase):
         # wait for — what happens to be running on the machine.
         self.stub("pgrep", 'case "$*" in *quickshell*) echo 1234 ;; *) exit 1 ;; esac')
         self.stub("omarchy-restart-shell", "exit 0")
+        # quickshell kill answers "nothing running", so the stop-first pass never reaches a
+        # real shell — the ordering itself is what the tests assert.
+        self.stub("quickshell", "exit 1")
         self.stub("systemd-run", "exit 0")
         # No waiter is armed yet: `is-active` on a unit that is not running exits 3.
         self.stub("systemctl", 'case "$*" in *is-active*) exit 3 ;; *) exit 0 ;; esac')
@@ -116,6 +119,13 @@ class Install(unittest.TestCase):
         self.assertTrue(self.called("omarchy-restart-shell"), result.stdout + result.stderr)
         self.assertIn("the shell restarted", result.stdout)
 
+    def test_a_plugin_write_stops_the_shell_before_it(self):
+        """The write must fire no watcher reload: stop first, restart after (2026-10-07 ×3)."""
+        result = self.run_install()
+        self.assertTrue(self.called("quickshell"), result.stdout + result.stderr)
+        self.assertIn("kill", self.called("quickshell")[0])
+        self.assertTrue(self.called("omarchy-restart-shell"))
+
     def test_a_locked_run_writes_nothing_and_arms_the_waiter(self):
         self.locked(True)
         result = self.run_install()
@@ -147,6 +157,7 @@ class Install(unittest.TestCase):
         (self.calls).write_text("")
         result = self.run_install()
         self.assertFalse(self.called("omarchy-restart-shell"))
+        self.assertFalse(self.called("quickshell"))
         self.assertNotIn("restart", result.stdout)
 
     def test_a_refused_restart_is_owed_rather_than_forgotten(self):

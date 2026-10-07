@@ -184,30 +184,61 @@ install_plugin_file() { # <mode> <repo file> <live file>
   esac
 }
 
-install_plugin_file m644 "$HERE/plugin/ReorderController.qml" "$PLUGIN_DIR/ReorderController.qml"
-install_plugin_file m644 "$HERE/plugin/ReorderRow.qml"        "$PLUGIN_DIR/ReorderRow.qml"
-install_plugin_file m644 "$HERE/plugin/Panel.qml"             "$PLUGIN_DIR/Panel.qml"
-install_plugin_file m644 "$HERE/plugin/Reptile.qml"            "$PLUGIN_DIR/Reptile.qml"
-install_plugin_file m755 "$HERE/plugin/bin/bar-arrange-apply" "$PLUGIN_DIR/bin/bar-arrange-apply"
-install_plugin_file m755 "$HERE/plugin/bin/ws-bg-pick"        "$PLUGIN_DIR/bin/ws-bg-pick"
-install_plugin_file m755 "$HERE/plugin/bin/ws-bg-add"         "$PLUGIN_DIR/bin/ws-bg-add"
-install_plugin_file m755 "$HERE/plugin/bin/ws-bg-remove"      "$PLUGIN_DIR/bin/ws-bg-remove"
-install_plugin_file m755 "$HERE/plugin/bin/ws-bg-restore"     "$PLUGIN_DIR/bin/ws-bg-restore"
-install_plugin_file m755 "$HERE/plugin/bin/ws-renumber"       "$PLUGIN_DIR/bin/ws-renumber"
-install_plugin_file m755 "$HERE/plugin/bin/barbarian-stash"   "$PLUGIN_DIR/bin/barbarian-stash"
-install_plugin_file m644 "$HERE/plugin/ThemeCard.qml"         "$PLUGIN_DIR/ThemeCard.qml"
-install_plugin_file m644 "$HERE/plugin/ThemeGrid.qml"         "$PLUGIN_DIR/ThemeGrid.qml"
-install_plugin_file m644 "$HERE/plugin/ThemeStore.qml"        "$PLUGIN_DIR/ThemeStore.qml"
-install_plugin_file m644 "$HERE/plugin/ThemeRemover.qml"      "$PLUGIN_DIR/ThemeRemover.qml"
-install_plugin_file m755 "$HERE/plugin/bin/theme-remover"     "$PLUGIN_DIR/bin/theme-remover"
-install_plugin_file m755 "$HERE/plugin/bin/plugin-uninstall"  "$PLUGIN_DIR/bin/plugin-uninstall"
-# The manifest goes in LAST: it names ThemeRemover.qml as the overlay, and a manifest that arrives
-# before the file it names leaves the shell with an overlay that fails to load. A run stopped part
-# way by the screen locking keeps the old manifest until the rest is in.
-install_plugin_file m644 "$HERE/plugin/manifest.json"         "$PLUGIN_DIR/manifest.json"
-install_plugin_file m755 "$HERE/engine/per-workspace-wallpaper.sh" "$ENGINE_DST"
-install_plugin_file m755 "$HERE/engine/ws-layout"              "$LAYOUT_DST/ws-layout"
-install_plugin_file m755 "$HERE/engine/quick-app"              "$LAYOUT_DST/quick-app"
+# Everything this installer writes, mode|repo file|live file. The manifest stays LAST in
+# the list: it names ThemeRemover.qml as the overlay, and a manifest that arrives before the
+# file it names leaves the shell with an overlay that fails to load.
+FILES=(
+  "m644|$HERE/plugin/ReorderController.qml|$PLUGIN_DIR/ReorderController.qml"
+  "m644|$HERE/plugin/ReorderRow.qml|$PLUGIN_DIR/ReorderRow.qml"
+  "m644|$HERE/plugin/Panel.qml|$PLUGIN_DIR/Panel.qml"
+  "m644|$HERE/plugin/Reptile.qml|$PLUGIN_DIR/Reptile.qml"
+  "m755|$HERE/plugin/bin/bar-arrange-apply|$PLUGIN_DIR/bin/bar-arrange-apply"
+  "m755|$HERE/plugin/bin/ws-bg-pick|$PLUGIN_DIR/bin/ws-bg-pick"
+  "m755|$HERE/plugin/bin/ws-bg-add|$PLUGIN_DIR/bin/ws-bg-add"
+  "m755|$HERE/plugin/bin/ws-bg-remove|$PLUGIN_DIR/bin/ws-bg-remove"
+  "m755|$HERE/plugin/bin/ws-bg-restore|$PLUGIN_DIR/bin/ws-bg-restore"
+  "m755|$HERE/plugin/bin/ws-renumber|$PLUGIN_DIR/bin/ws-renumber"
+  "m755|$HERE/plugin/bin/barbarian-stash|$PLUGIN_DIR/bin/barbarian-stash"
+  "m644|$HERE/plugin/ThemeCard.qml|$PLUGIN_DIR/ThemeCard.qml"
+  "m644|$HERE/plugin/ThemeGrid.qml|$PLUGIN_DIR/ThemeGrid.qml"
+  "m644|$HERE/plugin/ThemeStore.qml|$PLUGIN_DIR/ThemeStore.qml"
+  "m644|$HERE/plugin/ThemeRemover.qml|$PLUGIN_DIR/ThemeRemover.qml"
+  "m755|$HERE/plugin/bin/theme-remover|$PLUGIN_DIR/bin/theme-remover"
+  "m755|$HERE/plugin/bin/plugin-uninstall|$PLUGIN_DIR/bin/plugin-uninstall"
+  "m644|$HERE/plugin/manifest.json|$PLUGIN_DIR/manifest.json"
+  "m755|$HERE/engine/per-workspace-wallpaper.sh|$ENGINE_DST"
+  "m755|$HERE/engine/ws-layout|$LAYOUT_DST/ws-layout"
+  "m755|$HERE/engine/quick-app|$LAYOUT_DST/quick-app"
+)
+
+# ⚠️ THE SHELL IS STOPPED BEFORE A PLUGIN WRITE (2026-10-07, three SIGSEGVs: 11:36:15,
+#    11:39:32, 11:40:52 — enterprise's write-up lives in its docs/omarchy-setup.md). A write
+#    under plugins/ with the shell running fires its watcher's reload, and the restart half a
+#    second later lands while that reload is still finishing: Quickshell dies in
+#    IpcHandler::updateRegistration — the same frame as 2026-09-26 and the four-bar day.
+#    So when a plugin file is about to change and the screen is free, the shell is stopped
+#    FIRST (omarchy-restart-shell's own kill loop, minus the launch): no watcher is alive,
+#    the writes reload nothing, and the restart afterwards is the run's one and only reload.
+plugin_write_pending=0
+for f in "${FILES[@]}"; do
+  rest="${f#*|}"; src="${rest%%|*}"; dest="${f##*|}"
+  case "$dest" in
+    "$PLUGIN_DIR"/*) cmp -s "$src" "$dest" || plugin_write_pending=1 ;;
+  esac
+done
+
+SHELL_STOPPED=0
+if [ "$plugin_write_pending" = 1 ] && ! busy; then
+  omarchy_path="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^OMARCHY_PATH=//p' | tail -n 1)"
+  : "${omarchy_path:=$OMARCHY_PATH}"
+  while timeout 5 quickshell kill -p "$omarchy_path/shell" --any-display >/dev/null 2>&1; do :; done
+  SHELL_STOPPED=1
+fi
+
+for f in "${FILES[@]}"; do
+  rest="${f#*|}"; src="${rest%%|*}"; dest="${f##*|}"
+  install_plugin_file "${f%%|*}" "$src" "$dest"
+done
 
 # The engine is normally started by a user service or a theme-set hook on the host
 # machine; it is safe to install everywhere and started where the wiring exists.
@@ -283,6 +314,22 @@ RESTART_OWED=0
 [ -f "$RESTART_STAMP" ] && RESTART_OWED=1
 [ "$PLUGIN_CHANGED" = 1 ] && RESTART_OWED=1
 
+# A stopped shell owes its start no matter what else is true — nothing below may leave it
+# down. The writes fired no watcher reloads (nothing was watching), so this start is the
+# run's one and only reload; the crash race cannot exist.
+if [ "$SHELL_STOPPED" = 1 ]; then
+  if omarchy-restart-shell >/dev/null 2>&1; then
+    rm -f "$RESTART_STAMP"
+    SHELL_NOTE="and the shell restarted for the panel"
+  else
+    # The screen went up while it was down; the waiter finishes the job.
+    mkdir -p "$(dirname "$RESTART_STAMP")"
+    : > "$RESTART_STAMP"
+    arm_waiter
+    SHELL_NOTE="; the shell restarts when the screen is free"
+  fi
+fi
+
 if [ "$DEFERRED" -gt 0 ]; then
   # The screen went up part way through: some files are in, the rest are not. A panel file among
   # the ones that went in is owed a restart the waiter's own run would not know about, because by
@@ -293,6 +340,8 @@ if [ "$DEFERRED" -gt 0 ]; then
   fi
   arm_waiter
   echo "barbarian: $DEFERRED file(s) held back — the screen is locked or the panel is open; they go in the moment it clears"
+elif [ "$SHELL_STOPPED" = 1 ]; then
+  echo "barbarian: installed to $PLUGIN_DIR and $ENGINE_DST, $SHELL_NOTE"
 elif [ "$RESTART_OWED" = 1 ]; then
   if ! busy && restart_shell; then
     rm -f "$RESTART_STAMP"
